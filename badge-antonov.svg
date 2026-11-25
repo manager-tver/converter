@@ -1,29 +1,19 @@
-<svg width="260" height="96" viewBox="0 0 260 96" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif" role="img" aria-label="Антон · TohaVPN">
+<svg width="340" height="110" viewBox="0 0 340 110" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif" role="img" aria-label="Антон · TohaVPN">
   <defs>
-    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#111c33"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#4f8cff"/>
-      <stop offset="1" stop-color="#2b5fe0"/>
+      <stop offset="1" stop-color="#7c5cff"/>
     </linearGradient>
-    <linearGradient id="ring" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
+    <clipPath id="av"><circle cx="68" cy="55" r="42"/></clipPath>
   </defs>
-
-  <!-- badge base -->
-  <rect x="0.5" y="0.5" width="259" height="95" rx="16" fill="#0f172a" stroke="#243049" stroke-width="1"/>
-
-  <!-- shield -->
-  <g>
-    <path d="M40 14 L86 14 C99 14 108 23 108 36 L108 58 C108 71 96 82 78 85 C66 87 56 82 48 74 C44 70 42 64 40 60 L40 36 C40 25 40 19 40 14 Z"
-          fill="url(#shield)" stroke="#1b41a8" stroke-width="2" stroke-linejoin="round"/>
-    <path d="M52 24 C60 22 74 22 82 26 C86 27 88 29 88 33 C88 38 83 41 78 44 L78 62 C78 70 70 77 62 79 C56 80 52 77 49 73 C47 70 46 67 45 64 L45 42 C45 37 47 33 52 24 Z"
-          fill="url(#ring)"/>
-    <text x="63" y="62" font-size="34" font-weight="bold" fill="#ffffff" text-anchor="middle" font-family="Arial, Helvetica, sans-serif">Т</text>
-  </g>
-
-  <!-- text -->
-  <text x="128" y="44" font-size="20" font-weight="bold" fill="#f8fafc">Антон</text>
-  <text x="128" y="68" font-size="15" font-weight="bold" fill="#9fb4d8">TohaVPN</text>
-  <text x="128" y="86" font-size="11" fill="#64748b">создаёт сайты и сервисы</text>
+  <rect x="0.5" y="0.5" width="340" height="110" rx="20" fill="url(#bg)" stroke="#243049" stroke-width="1"/>
+  <circle cx="68" cy="55" r="46" fill="none" stroke="url(#ring)" stroke-width="3"/>
+  <image href="data:image/jpeg;base64,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" x="26" y="13" width="84" height="84" clip-path="url(#av)"/>
+  <text x="134" y="44" font-size="22" font-weight="bold" fill="#f8fafc">Антон</text>
+  <text x="134" y="66" font-size="16" font-weight="bold" fill="#9fb4d8">TohaVPN</text>
+  <text x="134" y="84" font-size="11" fill="#64748b">создаёт сайты и сервисы</text>
 </svg>
