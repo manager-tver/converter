@@ -14,6 +14,8 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--i
 .privacy-badge{font-size:12px;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;padding:6px 10px;border-radius:20px;font-weight:600}
 .btn{border:0;cursor:pointer;font-weight:700;border-radius:12px;padding:10px 18px;font-size:14px;display:inline-flex;align-items:center;gap:8px;text-decoration:none;transition:.15s}
 .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.btn-donate{background:linear-gradient(135deg,#f43f5e,#e11d48);color:#fff;box-shadow:0 4px 14px rgba(244,63,94,.35)}
+.btn-donate:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(244,63,94,.45)}
 .btn-primary:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(109,40,217,.25)}
 .btn-outline{background:#fff;border:1px solid var(--line);color:var(--ink)}
 .btn-success{background:var(--ok);color:#fff}
@@ -38,6 +40,13 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--i
 .tab.active{background:#fff;color:var(--ink);box-shadow:0 2px 8px rgba(0,0,0,.08)}
 .converter-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:20px}
 @media(max-width:860px){.converter-grid{grid-template-columns:1fr}.nav{display:none}}
+@media(max-width:640px){
+  .header-inner{gap:10px;height:58px}
+  .privacy-badge{display:none}
+  .logo{font-size:17px}
+  .logo-icon{width:30px;height:30px;font-size:15px}
+  .btn-sm{padding:8px 12px;font-size:12px}
+}
 .upload-zone{border:2px dashed #cbd5e1;border-radius:18px;padding:28px 20px;text-align:center;background:#fbfdff;transition:.2s;cursor:pointer}
 .upload-zone.drag{border-color:var(--accent);background:#f5f3ff;transform:scale(1.01)}
 .upload-icon{font-size:42px;margin-bottom:8px}
@@ -107,8 +116,6 @@ details p{color:var(--muted);font-size:14px;margin-top:8px}
 .small{font-size:12px;margin-top:4px}
 .author-badge{margin-top:14px;text-align:center}
 .author-badge img{display:inline-block;max-width:200px;width:100%;height:auto;border-radius:10px}
-.donate-wrap{margin-top:16px;text-align:center}
-.donate-btn{padding:10px 24px;font-size:15px;box-shadow:0 6px 16px rgba(109,40,217,.25)}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-size:14px;opacity:0;pointer-events:none;transition:.25s;z-index:100;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .muted{opacity:.7}
