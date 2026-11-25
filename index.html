@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ConvertLab — Конвертер документов онлайн | PDF, Word, Excel, JPG</title>
+<meta name="description" content="Бесплатный онлайн-конвертер документов. PDF в JPG, Word в PDF, Excel в PDF и обратно. Все форматы, без регистрации, прямо в браузере.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://unpkg.com/docx@8.5.0/build/index.js"></script>
+</head>
+<body>
+<header class="header">
+  <div class="container header-inner">
+    <a href="#" class="logo">
+      <span class="logo-icon">⇄</span>
+      <span>Convert<b>Lab</b></span>
+      <span class="logo-badge">ONLINE</span>
+    </a>
+    <nav class="nav">
+      <a href="#converter">Конвертер</a>
+      <a href="#formats">Форматы</a>
+      <a href="#matrix">Матрица</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="header-actions">
+      <span class="privacy-badge">🔒 100% в браузере</span>
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('converter').scrollIntoView({behavior:'smooth'})">Конвертировать</button>
+    </div>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="container">
+    <div class="hero-badge">✨ Бесплатно • Без регистрации • Без водяных знаков</div>
+    <h1>Конвертируйте <span class="grad">любые документы</span><br>за секунды</h1>
+    <p class="hero-sub">PDF ↔ JPG, Word ↔ PDF, Excel ↔ PDF, картинки, текст и ещё 20+ форматов. Всё обрабатывается прямо в вашем браузере — файлы никуда не отправляются.</p>
+    <div class="hero-stats">
+      <div><strong>20+</strong><span>форматов</span></div>
+      <div><strong>∞</strong><span>файлов</span></div>
+      <div><strong>0 ₽</strong><span>стоимость</span></div>
+      <div><strong>100%</strong><span>приватно</span></div>
+    </div>
+  </div>
+</section>
+
+<main class="container" id="converter">
+  <div class="converter-card">
+    <div class="converter-head">
+      <div>
+        <h2>Конвертер документов</h2>
+        <p>Перетащите файл или выберите на устройстве</p>
+      </div>
+      <div class="converter-tabs">
+        <button class="tab active" data-mode="single">Один файл</button>
+        <button class="tab" data-mode="batch">Пакетно</button>
+      </div>
+    </div>
+
+    <div class="converter-grid">
+      <!-- Upload -->
+      <div class="upload-zone" id="dropZone">
+        <input type="file" id="fileInput" hidden>
+        <div class="upload-icon">📁</div>
+        <h3>Перетащите сюда файл</h3>
+        <p>или</p>
+        <button class="btn btn-outline" id="browseBtn">Выбрать файл</button>
+        <p class="upload-hint">PDF, DOCX, XLSX, JPG, PNG, TXT, HTML, MD, PPTX, CSV, RTF<br>до 100 МБ • обработка локально</p>
+        <div class="file-info" id="fileInfo" hidden>
+          <div class="file-row">
+            <span class="file-ico" id="fileIco">📄</span>
+            <div class="file-meta">
+              <strong id="fileName">—</strong>
+              <span id="fileSize">—</span>
+            </div>
+            <button class="icon-btn" id="clearFile" title="Убрать">✕</button>
+          </div>
+          <div class="progress-wrap" id="progressWrap" hidden>
+            <div class="progress-bar"><div id="progressFill"></div></div>
+            <span id="progressText">Готово</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="controls">
+        <label class="field-label">Из формата</label>
+        <div class="format-select" id="fromSelect">
+          <button class="fmt-btn active" data-fmt="auto">Авто</button>
+          <button class="fmt-btn" data-fmt="pdf">PDF</button>
+          <button class="fmt-btn" data-fmt="docx">DOCX</button>
+          <button class="fmt-btn" data-fmt="xlsx">XLSX</button>
+          <button class="fmt-btn" data-fmt="jpg">JPG</button>
+          <button class="fmt-btn" data-fmt="png">PNG</button>
+          <button class="fmt-btn" data-fmt="txt">TXT</button>
+          <button class="fmt-btn" data-fmt="html">HTML</button>
+          <button class="fmt-btn" data-fmt="csv">CSV</button>
+          <button class="fmt-btn" data-fmt="pptx">PPTX</button>
+          <button class="fmt-btn" data-fmt="md">MD</button>
+        </div>
+
+        <button class="swap-btn" id="swapBtn" title="Поменять местами">⇅</button>
+
+        <label class="field-label">В формат</label>
+        <div class="format-select" id="toSelect">
+          <button class="fmt-btn" data-fmt="pdf">PDF</button>
+          <button class="fmt-btn active" data-fmt="jpg">JPG</button>
+          <button class="fmt-btn" data-fmt="png">PNG</button>
+          <button class="fmt-btn" data-fmt="docx">DOCX</button>
+          <button class="fmt-btn" data-fmt="xlsx">XLSX</button>
+          <button class="fmt-btn" data-fmt="txt">TXT</button>
+          <button class="fmt-btn" data-fmt="html">HTML</button>
+          <button class="fmt-btn" data-fmt="csv">CSV</button>
+          <button class="fmt-btn" data-fmt="webp">WEBP</button>
+          <button class="fmt-btn" data-fmt="json">JSON</button>
+        </div>
+
+        <div class="options">
+          <label>Качество JPG/PNG <input type="range" id="quality" min="10" max="100" value="90"> <span id="qVal">90%</span></label>
+          <label><input type="checkbox" id="multiPage" checked> Все страницы PDF</label>
+        </div>
+
+        <button class="btn btn-primary btn-lg btn-convert" id="convertBtn" disabled>
+          <span id="convertLabel">Конвертировать</span> <span>→</span>
+        </button>
+
+        <div class="result" id="resultBox" hidden>
+          <div class="result-ok">✅ Готово!</div>
+          <div class="result-file" id="resultFile">—</div>
+          <div class="result-actions">
+            <a class="btn btn-success" id="downloadBtn" download>⬇ Скачать</a>
+            <button class="btn btn-outline" id="convertAnother">Ещё раз</button>
+          </div>
+          <div class="result-preview" id="resultPreview"></div>
+        </div>
+
+        <div class="error" id="errorBox" hidden></div>
+      </div>
+    </div>
+
+    <div class="quick-converts">
+      <span>Популярно:</span>
+      <button data-quick="pdf:jpg">PDF → JPG</button>
+      <button data-quick="docx:pdf">Word → PDF</button>
+      <button data-quick="pdf:docx">PDF → Word</button>
+      <button data-quick="jpg:pdf">JPG → PDF</button>
+      <button data-quick="xlsx:pdf">Excel → PDF</button>
+      <button data-quick="png:jpg">PNG → JPG</button>
+      <button data-quick="txt:pdf">TXT → PDF</button>
+      <button data-quick="html:pdf">HTML → PDF</button>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="history" id="historyWrap" hidden>
+    <h3>История конвертаций</h3>
+    <div id="historyList"></div>
+  </div>
+</main>
+
+<section class="container" id="formats">
+  <h2 class="section-title">Поддерживаемые форматы</h2>
+  <p class="section-sub">Все популярные форматы документов, изображений и таблиц</p>
+  <div class="formats-grid">
+    <div class="fmt-card"><span>📕</span><b>PDF</b><small>документы</small></div>
+    <div class="fmt-card"><span>📘</span><b>DOCX</b><small>Word</small></div>
+    <div class="fmt-card"><span>📗</span><b>XLSX</b><small>Excel</small></div>
+    <div class="fmt-card"><span>📙</span><b>PPTX</b><small>PowerPoint</small></div>
+    <div class="fmt-card"><span>🖼️</span><b>JPG</b><small>фото</small></div>
+    <div class="fmt-card"><span>🎨</span><b>PNG</b><small>картинки</small></div>
+    <div class="fmt-card"><span>🌐</span><b>WEBP</b><small>современный</small></div>
+    <div class="fmt-card"><span>📝</span><b>TXT</b><small>текст</small></div>
+    <div class="fmt-card"><span>🌐</span><b>HTML</b><small>веб-страницы</small></div>
+    <div class="fmt-card"><span>📊</span><b>CSV</b><small>таблицы</small></div>
+    <div class="fmt-card"><span>🧾</span><b>JSON</b><small>данные</small></div>
+    <div class="fmt-card"><span>📄</span><b>MD</b><small>Markdown</small></div>
+    <div class="fmt-card"><span>📑</span><b>RTF</b><small>Rich Text</small></div>
+    <div class="fmt-card"><span>📚</span><b>ODT</b><small>OpenDocument</small></div>
+    <div class="fmt-card"><span>🗂️</span><b>ZIP</b><small>архивы</small></div>
+    <div class="fmt-card"><span>🔤</span><b>EPUB</b><small>книги</small></div>
+  </div>
+</section>
+
+<section class="container" id="matrix">
+  <h2 class="section-title">Матрица конвертации</h2>
+  <p class="section-sub">Что во что можно превратить — всё работает прямо в браузере</p>
+  <div class="matrix-wrap">
+    <table class="matrix">
+      <thead><tr><th>Из ↓ / В →</th><th>PDF</th><th>JPG</th><th>PNG</th><th>DOCX</th><th>XLSX</th><th>TXT</th><th>HTML</th><th>CSV</th></tr></thead>
+      <tbody>
+        <tr><th>PDF</th><td>—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><th>DOCX</th><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td>—</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><th>XLSX</th><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td>—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><th>JPG/PNG</th><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><th>TXT</th><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td>—</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><th>HTML</th><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td class="yes">✓</td><td>—</td><td>—</td></tr>
+        <tr><th>CSV</th><td class="yes">✓</td><td>—</td><td>—</td><td>—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td></tr>
+        <tr><th>PPTX</th><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td>—</td><td>—</td><td class="yes">✓</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="features">
+    <div class="feat"><span>🔒</span><b>Приватно</b><p>Файлы не покидают ваш браузер. Нет серверов — нет утечек.</p></div>
+    <div class="feat"><span>⚡</span><b>Быстро</b><p>Конвертация на лету, без ожидания очереди и загрузки.</p></div>
+    <div class="feat"><span>💸</span><b>Бесплатно</b><p>Без лимитов, подписок и водяных знаков. Сколько угодно файлов.</p></div>
+    <div class="feat"><span>📱</span><b>Везде</b><p>Работает на телефоне, планшете и компьютере. Нужен только браузер.</p></div>
+  </div>
+</section>
+
+<section class="container" id="faq">
+  <h2 class="section-title">Частые вопросы</h2>
+  <details><summary>Мои файлы загружаются на сервер?</summary><p>Нет. Вся конвертация происходит локально в вашем браузере с помощью JavaScript-библиотек (PDF.js, Mammoth, SheetJS и др.). Файлы никуда не отправляются.</p></details>
+  <details><summary>Какие конвертации работают лучше всего?</summary><p>PDF → JPG/PNG/TXT, DOCX → PDF/TXT/HTML, JPG/PNG → PDF, XLSX → PDF/CSV/JSON, TXT/HTML/MD → PDF/DOCX. Для сложных макетов Word результат может немного отличаться от оригинала.</p></details>
+  <details><summary>Есть ли ограничения по размеру?</summary><p>Официально — до 100 МБ, но на слабых устройствах большие PDF могут тормозить. Для пакетной обработки лучше конвертировать по одному файлу.</p></details>
+  <details><summary>Можно ли конвертировать несколько файлов сразу?</summary><p>Да, включите режим «Пакетно» и выберите несколько файлов — каждый будет сконвертирован по очереди.</p></details>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <p><b>ConvertLab</b> — бесплатный конвертер документов в браузере • Сделано на GitHub Pages • <a href="https://github.com/manager-tver/converter">github.com/manager-tver/converter</a></p>
+    <p class="muted">PDF, Word, Excel, картинки и другие форматы — быстро, приватно и без регистрации.</p>
+  </div>
+</footer>
+
+<div class="toast" id="toast"></div>
+<div id="hiddenRender" style="position:absolute;left:-9999px;top:0;width:800px;background:#fff;padding:24px;font-family:Arial"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
