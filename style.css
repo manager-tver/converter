@@ -105,6 +105,8 @@ details p{color:var(--muted);font-size:14px;margin-top:8px}
 .footer a{color:var(--accent)}
 .author-line{margin-top:12px;font-weight:700;color:var(--ink)}
 .small{font-size:12px;margin-top:4px}
+.author-badge{margin-top:14px;text-align:center}
+.author-badge img{display:inline-block;max-width:200px;width:100%;height:auto;border-radius:10px}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-size:14px;opacity:0;pointer-events:none;transition:.25s;z-index:100;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .muted{opacity:.7}
