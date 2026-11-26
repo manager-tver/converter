@@ -491,31 +491,16 @@ async function docxToHtml(arrayBuffer){
           if(p.nodeType===1 && p.localName==='p' && p.namespaceURI===NS){
             const html=buildParagraph(p);
             const txt=byNS(p,'t').map(t=>t.textContent).join('');
-            // effective font size (pt): first run w:sz, else pPr/rPr sz, else 11
-            let sz=11;
-            const fr=firstNS(p,'r');
-            if(fr){ const rPr=firstNS(fr,'rPr'); if(rPr){ const s=firstNS(rPr,'sz'); if(s){ sz=parseInt(attrNS(s,'val'),10)/2; } } }
-            const pPr=firstNS(p,'pPr');
-            if(sz===11 && pPr){ const mr=firstNS(pPr,'rPr'); if(mr){ const s=firstNS(mr,'sz'); if(s){ sz=parseInt(attrNS(s,'val'),10)/2; } } }
-            paras.push({html, txt, sz});
+            paras.push({html, txt});
           }
         }
-        // Two-column layout: the largest-font block (company name) is placed on
-        // the right, the smaller-font block (address) on the left, top-aligned,
-        // so the address sits BESIDE the name instead of stacked below it.
-        // Empty spacer paragraphs are dropped.
+        // Stack the non-empty paragraphs: company name on top, address directly
+        // below it. Empty spacer paragraphs are dropped so the address sits
+        // right under the name with no gap and no overlap (the name stays in the
+        // header band and does not step on the address).
         let innerTx=paras.map(p=>p.html).join('');
         const nonEmpty=paras.filter(p=>p.txt.trim());
-        if(nonEmpty.length>1){
-          const maxSz=Math.max.apply(null, nonEmpty.map(p=>p.sz||0));
-          const right=nonEmpty.filter(p=>(p.sz||0)>=maxSz);
-          const left=nonEmpty.filter(p=>(p.sz||0)<maxSz);
-          if(left.length && right.length){
-            const leftHtml=left.map(p=>p.html).join('').replace(/text-align:right/g,'text-align:left');
-            const rightHtml=right.map(p=>p.html).join('');
-            innerTx=`<div style="display:flex;align-items:flex-start;gap:14px;">${leftHtml?`<div style="flex:1 1 auto;min-width:0;">${leftHtml}</div>`:''}${rightHtml?`<div style="flex:0 0 auto;text-align:right;">${rightHtml}</div>`:''}</div>`;
-          }
-        }
+        if(nonEmpty.length){ innerTx=nonEmpty.map(p=>p.html).join(''); }
         const anchor=firstNSn(drEl,WPD,'anchor');
         const off=anchorOffset(anchor);
         return {html:`<div style="position:absolute;left:${off.left}px;top:${Math.max(0,off.top)}px;width:${w}px;min-height:${h}px;">${innerTx}</div>`, h};
@@ -786,7 +771,7 @@ async function docxToHtml(arrayBuffer){
       const dir=`<span style="${decl}">Директор</span>`;
       const fio=`<span style="${decl}">ФИО</span>`;
       const par=sigMatch[1]?`<span style="${decl}">${renderText(sigMatch[1])}</span>`:'';
-      sigHtml=`<div style="position:relative;width:100%;min-height:1.5em;white-space:nowrap;"><div style="text-align:left;line-height:1.7">${dir}<br>${fio}</div>${par?`<div style="position:absolute;right:0px;text-align:right">${par}</div>`:''}</div>`;
+      sigHtml=`<div style="position:relative;width:100%;min-height:1.5em;white-space:nowrap;"><div style="text-align:left;line-height:1.7">${dir}<br>${fio}</div>${par?`<div style="position:absolute;top:0;right:0px;text-align:right">${par}</div>`:''}</div>`;
     }
     if(sigHtml){ inner=sigHtml; } else if(hasTabs){
       // Build segments split by tab characters, keeping per-segment style.
