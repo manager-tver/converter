@@ -227,53 +227,46 @@ function registerFonts(doc){
 function htmlToBlocks(html){
   const div=document.createElement('div'); div.innerHTML=html;
   const blocks=[];
-  function walk(node){
+  const isBlockTag = (tag)=>
+    ['p','div','h1','h2','h3','h4','h5','h6','li','tr','table','ul','ol'].includes(tag);
+
+  // Recursively walk a node, accumulating text runs into `blocks`.
+  // `bold`/`italic` are inherited from parent formatting elements.
+  function walk(node, bold, italic){
     node.childNodes.forEach(ch=>{
       if(ch.nodeType===3){ // text node
         const t=ch.textContent;
         if(t && t.trim()!==''){
-          blocks.push({text:t, bold:false, italic:false});
+          blocks.push({text:t, bold, italic});
         }
       } else if(ch.nodeType===1){ // element
-        const tag=ch.tagName.toLowerCase();
-        let bold=false, italic=false;
-        if(tag==='b'||tag==='strong') bold=true;
-        if(tag==='i'||tag==='em') italic=true;
-        if(ch.childNodes.length===0){
-          const t=(ch.textContent||'').trim();
-          if(t) blocks.push({text:t, bold, italic});
-        } else {
-          walkWithStyle(ch, bold, italic);
-        }
-        if(tag==='p'||tag==='div'||tag==='h1'||tag==='h2'||tag==='h3'||tag==='li'){
-          blocks.push({paragraph:true});
-        }
-      }
-    });
-  }
-  function walkWithStyle(node, bold, italic){
-    node.childNodes.forEach(ch=>{
-      if(ch.nodeType===3){
-        const t=ch.textContent;
-        if(t && t.trim()!==''){ blocks.push({text:t, bold, italic}); }
-      } else if(ch.nodeType===1){
         const tag=ch.tagName.toLowerCase();
         let b=bold, i=italic;
         if(tag==='b'||tag==='strong') b=true;
         if(tag==='i'||tag==='em') i=true;
+
+        // For block-level elements: recurse into children, then emit ONE paragraph break
+        // (not per-child, to avoid double spacing). The break is emitted once per block element.
+        if(isBlockTag(tag)){
+          walk(ch, b, i);
+          // Avoid consecutive duplicate paragraph breaks.
+          if(blocks.length===0 || !blocks[blocks.length-1].paragraph){
+            blocks.push({paragraph:true});
+          }
+          return;
+        }
+
+        // Inline element (no children): emit as its own run.
         if(ch.childNodes.length===0){
           const t=(ch.textContent||'').trim();
           if(t) blocks.push({text:t, bold:b, italic:i});
         } else {
-          walkWithStyle(ch,b,i);
-        }
-        if(tag==='p'||tag==='div'||tag==='h1'||tag==='h2'||tag==='h3'||tag==='li'){
-          blocks.push({paragraph:true});
+          walk(ch, b, i);
         }
       }
     });
   }
-  walk(div);
+  walk(div, false, false);
   return blocks;
 }
 
@@ -290,7 +283,8 @@ async function docxToPdf(html){
 
   const blocks=htmlToBlocks(html);
   let x=margin, y=margin+fontSize;
-  let lineH=fontSize*1.5;
+  let lineH=fontSize*1.5;      // 16.5pt — between lines inside a paragraph (as in Word/example)
+  let paraGap=fontSize*3;      // 33pt — between paragraphs (as in example)
 
   function newLine(gap){
     if(y+gap>doc.internal.pageSize.getHeight()-margin){
@@ -301,7 +295,7 @@ async function docxToPdf(html){
   }
 
   for(const b of blocks){
-    if(b.paragraph){ newLine(lineH); continue; }
+    if(b.paragraph){ newLine(paraGap); continue; }
     const style = (b.bold?'bold':'')+(b.italic?'italic':'');
     const text=b.text.replace(/\s+/g,' ').trim();
     if(!text) continue;
