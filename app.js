@@ -440,7 +440,7 @@ async function docxToHtml(arrayBuffer){
     // named color or other -> pass through lowercased
     return c.toLowerCase();
   }
-  // EMU -> px (1 EMU = 96/9525000 px)
+  // EMU -> px (1 inch = 914400 EMU, 1 inch = 96 px)
   const emuToPx = emu => Math.round(emu * 96 / 914400);
 
   // DrawingML namespaces (used for images / textboxes)
