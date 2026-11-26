@@ -503,7 +503,13 @@ async function docxToHtml(arrayBuffer){
         if(nonEmpty.length){ innerTx=nonEmpty.map(p=>p.html).join(''); }
         const anchor=firstNSn(drEl,WPD,'anchor');
         const off=anchorOffset(anchor);
-        return {html:`<div style="position:absolute;left:${off.left}px;top:${Math.max(0,off.top)}px;width:${w}px;min-height:${h}px;">${innerTx}</div>`, h};
+        // Header-band text boxes (top edge within the top margin) are nudged
+        // slightly up and to the right so the company name + address sit clear
+        // of the body text below, rather than straddling it.
+        const isHeaderBox = off.top < mt;
+        const txDx = isHeaderBox ? 30 : 0;
+        const txDy = isHeaderBox ? 18 : 0;
+        return {html:`<div style="position:absolute;left:${off.left+txDx}px;top:${Math.max(0,off.top-txDy)}px;width:${w}px;min-height:${h}px;">${innerTx}</div>`, h};
       }
       // image: get r:embed from a:blip
       const blip=firstNSn(drEl,DXF,'blip');
@@ -975,13 +981,47 @@ async function docxToHtml(arrayBuffer){
   const body=firstNS(dom,'body');
   let htmlBody='';
   if(body){
-    for(const child of Array.from(body.children)){
-      if(child.namespaceURI===NS){
-        if(child.localName==='p'){
-          htmlBody += buildParagraph(child);
-        } else if(child.localName==='tbl'){
-          htmlBody += buildTable(child);
+    const kids=Array.from(body.children).filter(c=>c.namespaceURI===NS && (c.localName==='p'||c.localName==='tbl'));
+    // Effective font size (pt) of a paragraph: first run w:sz, else pPr/rPr sz, else 11.
+    function pSize(pEl){ let sz=11; const fr=firstNS(pEl,'r'); if(fr){ const rPr=firstNS(fr,'rPr'); if(rPr){ const s=firstNS(rPr,'sz'); if(s){ sz=parseInt(attrNS(s,'val'),10)/2; } } } const pPr=firstNS(pEl,'pPr'); if(sz===11 && pPr){ const mr=firstNS(pPr,'rPr'); if(mr){ const s=firstNS(mr,'sz'); if(s){ sz=parseInt(attrNS(s,'val'),10)/2; } } } return sz; }
+    function pText(pEl){ return byNS(pEl,'t').filter(t=>!isInsideTextbox(t,pEl) && !isInsideFallback(t,pEl)).map(t=>t.textContent).join('').trim(); }
+    const LARGE_INDENT_PX=200;      // a paragraph indented >=200px is a right-column field
+    const TWIPS_PER_PX=1440/96;
+    let firstNonEmpty=true;
+    for(let i=0;i<kids.length;i++){
+      const child=kids[i];
+      if(child.localName==='p'){
+        let phtml=buildParagraph(child);
+        // Align the first non-empty un-indented paragraph (a left-column label
+        // like "Исх. № / От") with the following right-column field (a
+        // paragraph with a large left indent, e.g. "Кому ..."). Push the label
+        // block down by (its line count) line-heights so its top line lines up
+        // with the indented field's top line.
+        if(firstNonEmpty && pText(child)){
+          firstNonEmpty=false;
+          const ilPx=(readParaProps(child).indLeft||0)/TWIPS_PER_PX;
+          if(ilPx < LARGE_INDENT_PX){
+            let cnt=0, found=false;
+            for(let j=i+1;j<kids.length;j++){
+              const c2=kids[j];
+              if(c2.localName==='tbl') break;
+              if(c2.localName==='p'){
+                if(pText(c2)){
+                  const il2=(readParaProps(c2).indLeft||0)/TWIPS_PER_PX;
+                  if(il2>=LARGE_INDENT_PX){ found=true; break; } else cnt++;
+                }
+              }
+            }
+            if(found){
+              const lh=pSize(child)*4/3*1.2;   // one line-height in px (single spacing)
+              const mtPx=Math.round((cnt+1)*lh);
+              if(mtPx>0) phtml=`<div style="margin-top:${mtPx}px">${phtml}</div>`;
+            }
+          }
         }
+        htmlBody += phtml;
+      } else if(child.localName==='tbl'){
+        htmlBody += buildTable(child);
       }
     }
   }
