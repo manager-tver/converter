@@ -717,11 +717,17 @@ async function docxToHtml(arrayBuffer){
       const rPr=firstNS(r,'rPr');
       const st=runStyle(rPr, styleObj);
       let txt='';
-      const ts=byNS(r,'t');
+      const ts=byNS(r,'t').filter(t=>!isInsideTextbox(t,r) && !isInsideFallback(t,r));
       for(const t of ts){ txt += t.textContent; }
-      const tabs=byNS(r,'tab');
+      // Word authors often type runs of spaces to align trailing text (e.g. a
+      // signature line "Директор ... <spaces> ФИО"). 4+ consecutive spaces act
+      // as a right-tab so the trailing text lands at the right margin, matching
+      // Word's justify behaviour. Runs that are entirely spaces (blank spacer
+      // lines) are left untouched so they keep collapsing to a blank line.
+      if(/\S/.test(txt)) txt = txt.replace(/ {4,}/g, '\t');
+      const tabs=byNS(r,'tab').filter(t=>!isInsideTextbox(t,r) && !isInsideFallback(t,r));
       for(let i=0;i<tabs.length;i++) txt += '\t';
-      const brs=byNS(r,'br');
+      const brs=byNS(r,'br').filter(t=>!isInsideTextbox(t,r) && !isInsideFallback(t,r));
       for(let i=0;i<brs.length;i++) txt += '\n';
       // footnote reference -> superscript [n] marker in the text
       const fr=firstNS(r,'footnoteReference');
@@ -826,7 +832,12 @@ async function docxToHtml(arrayBuffer){
     inner += drawingsHtml;
     const hasText = inner.replace(/<[^>]+>/g,'').trim().length>0 || inner.indexOf('<img')>=0 || inner.indexOf('<div')>=0;
     // paragraph style
-    const align = pp.align || 'left';
+    let align = pp.align || 'left';
+    // Signature closing phrases ("С уважением,") are right-aligned in the Word
+    // original. Detect by content so the rule is general (any document that
+    // uses this standard Russian business-letter closing).
+    const paraText = textRuns.map(t=>t.txt).join('').replace(/\s+/g,' ').trim();
+    if(/^С уважением,?/.test(paraText)) align='right';
     // Effective paragraph font-size: first non-empty run size, else paragraph-
     // mark rPr (pPr/rPr), else style/default. Setting it on the <p> ensures
     // unitless line-height multiplies the actual text size (8pt) rather than
