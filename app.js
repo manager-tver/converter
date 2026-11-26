@@ -60,13 +60,14 @@ function detectFmt(file){
 // --- UI wiring ---
 browseBtn.onclick = e=>{ e.stopPropagation(); fileInput.click(); };
 dropZone.onclick = ()=> fileInput.click();
-fileInput.onchange = ()=>{ if(fileInput.files && fileInput.files.length){ for(const f of fileInput.files) addFile(f); fileInput.value=''; } };
+fileInput.onchange = ()=>{ if(fileInput.files && fileInput.files.length){ setFiles(Array.from(fileInput.files)); fileInput.value=''; } };
 ['dragover','dragenter'].forEach(ev=>dropZone.addEventListener(ev,e=>{e.preventDefault();dropZone.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>dropZone.addEventListener(ev,e=>{e.preventDefault();dropZone.classList.remove('drag');}));
-dropZone.addEventListener('drop',e=>{ e.preventDefault(); const fs=e.dataTransfer.files; if(fs && fs.length){ for(const f of fs) addFile(f); } });
+dropZone.addEventListener('drop',e=>{ e.preventDefault(); const fs=e.dataTransfer.files; if(fs && fs.length){ setFiles(Array.from(fs)); } });
 $('clearFile').onclick = e=>{ e.stopPropagation(); clearFile(); };
 $('quality').oninput = e=> $('qVal').textContent=e.target.value+'%';
 
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function renderFileList(){
   const n=currentFiles.length;
   fileInfo.hidden=false;
@@ -81,35 +82,47 @@ function renderFileList(){
     fileListEl.innerHTML=currentFiles.map((f,i)=>`<div class="file-list-item">
       <span class="file-ico">${iconFor(extOf(f.name))}</span>
       <div class="file-meta"><strong>${esc(f.name)}</strong><span>${fmtSize(f.size)} • ${detectFmt(f).toUpperCase()}</span></div>
-      <button class="icon-btn" data-rm="${i}" title="Убрать">✕</button>
+      <button type="button" class="icon-btn" data-rm="${i}" title="Убрать">✕</button>
     </div>`).join('');
     Array.from(fileListEl.querySelectorAll('[data-rm]')).forEach(b=>{
-      b.onclick=()=>{ currentFiles.splice(parseInt(b.dataset.rm,10),1); currentFile=currentFiles[0]||null; renderFileList(); if(!currentFiles.length) clearFile(); };
+      b.onclick=(e)=>{
+        e.stopPropagation();          // do NOT open the file picker via dropZone
+        const idx=parseInt(b.dataset.rm,10);
+        currentFiles.splice(idx,1);   // remove exactly one file
+        currentFile=currentFiles[0]||null;
+        renderFileList();
+        if(!currentFiles.length) clearFile();
+      };
     });
     currentFile=currentFiles[0]||null;
   }
   convertBtn.disabled=!currentFiles.length;
 }
-function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function addFile(file){
+// Replace the current selection with the given files (dedup within the set).
+function setFiles(files){
   hideError(); resultBox.hidden=true;
-  // auto-suggest target only when no files yet
-  if(currentFiles.length===0){
-    const d=detectFmt(file);
+  currentFiles=[];
+  // auto-suggest target only from the first file
+  if(files.length){
+    const d=detectFmt(files[0]);
     if(d==='pdf') selectTo('jpg');
     else if(d==='docx') selectTo('pdf');
     else if(d==='jpg'||d==='png'||d==='webp') selectTo('pdf');
     else if(d==='xlsx'||d==='csv') selectTo('pdf');
     else if(d==='txt') selectTo('pdf');
   }
-  // avoid duplicating same name+size already present
-  if(!currentFiles.some(f=>f.name===file.name && f.size===file.size)){
-    currentFiles.push(file);
+  const seen=new Set();
+  for(const f of files){
+    const key=f.name+'|'+f.size+'|'+f.lastModified;
+    if(seen.has(key)) continue;          // skip duplicates within this selection
+    seen.add(key);
+    currentFiles.push(f);
   }
   renderFileList();
   progressWrap.hidden=true;
-  toast('Добавлен: '+file.name);
+  if(currentFiles.length) toast(`Выбрано файлов: ${currentFiles.length}`);
 }
+function addFile(file){ setFiles([file]); }
 function clearFile(){ currentFiles=[]; currentFile=null; fileInfo.hidden=true; convertBtn.disabled=true; fileInput.value=''; resultBox.hidden=true; }
 
 function bindSelect(id, cb){
