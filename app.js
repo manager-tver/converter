@@ -2,6 +2,22 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const { jsPDF } = window.jspdf;
 
+// Register PT Sans (Cyrillic) as a web font via @font-face so html2canvas
+// can render Cyrillic text with the embedded base64 TTFs from fonts.js.
+function injectPtSansFontFace(){
+  const fam = window.__pdfFonts && window.__pdfFonts.PTSans;
+  if(!fam || document.getElementById('ptsans-fontface')) return;
+  const css = '@font-face{font-family:"PT Sans";font-style:normal;font-weight:400;src:url(data:font/ttf;base64,' + fam.normal + ') format("truetype");}'
+    + '@font-face{font-family:"PT Sans";font-style:normal;font-weight:700;src:url(data:font/ttf;base64,' + fam.bold + ') format("truetype");}'
+    + '@font-face{font-family:"PT Sans";font-style:italic;font-weight:400;src:url(data:font/ttf;base64,' + fam.italic + ') format("truetype");}'
+    + '@font-face{font-family:"PT Sans";font-style:italic;font-weight:700;src:url(data:font/ttf;base64,' + fam.bolditalic + ') format("truetype");}';
+  const el=document.createElement('style');
+  el.id='ptsans-fontface';
+  el.textContent=css;
+  document.head.appendChild(el);
+}
+injectPtSansFontFace();
+
 let currentFile = null;
 let fromFmt = 'auto';
 let toFmt = 'jpg';
@@ -200,125 +216,201 @@ async function textToDocx(text){
   const doc=new Document({sections:[{children: text.split('\n').map(l=>new Paragraph({children:[new TextRun(l||' ')]}))}]});
   return await Packer.toBlob(doc);
 }
+// Parse DOCX (Office Open XML) directly to HTML, preserving alignment,
+// bold/italic, font sizes, line spacing and page size. This gives full
+// control over layout (mammoth drops paragraph alignment, which breaks
+// centered titles and Word-like spacing).
 async function docxToHtml(arrayBuffer){
-  const res=await mammoth.convertToHtml({arrayBuffer});
-  return res.value;
-}
-// --- PT Sans (Cyrillic) font registration for jsPDF ---
-let pdfFontsReady=false;
-// registerFonts must be called on a jsPDF document instance
-function registerFonts(doc){
-  if(pdfFontsReady) return;
-  const fam = window.__pdfFonts && window.__pdfFonts.PTSans;
-  if(!fam){ throw new Error('Кириллический шрифт не найден'); }
-  const defs={
-    normal: fam.normal, bold: fam.bold, italic: fam.italic, bolditalic: fam.bolditalic
-  };
-  for(const style of Object.keys(defs)){
-    const vfsName = 'PTSans-'+style+'.ttf';
-    // addFileToVFS and addFont are instance methods in jsPDF 2.5.x
-    doc.addFileToVFS(vfsName, defs[style]);
-    doc.addFont(vfsName, 'PTSans', style);
+  const zip=await JSZip.loadAsync(arrayBuffer);
+  const docXml=await zip.file('word/document.xml').async('string');
+  const dom=new DOMParser().parseFromString(docXml,'application/xml');
+  const NS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  // namespace-aware helpers (Clark notation {ns}tag is NOT supported by getElementsByTagName in browsers)
+  const byNS=(parent,name)=>Array.from(parent.getElementsByTagNameNS(NS,name));
+  const firstNS=(parent,name)=>byNS(parent,name)[0]||null;
+  const attrNS=(el,name)=>el.getAttributeNS(NS,name);
+
+  // --- page size & margins (from sectPr) ---
+  let pageW=11906, pageH=16838, marginTop=1440, marginRight=1440, marginBottom=1440, marginLeft=1440;
+  const sectPr=firstNS(dom,'sectPr');
+  if(sectPr){
+    const pgSz=firstNS(sectPr,'pgSz');
+    if(pgSz){ pageW=parseInt(attrNS(pgSz,'w')||'11906',10); pageH=parseInt(attrNS(pgSz,'h')||'16838',10); }
+    const pgMar=firstNS(sectPr,'pgMar');
+    if(pgMar){
+      marginTop=parseInt(attrNS(pgMar,'top')||'1440',10);
+      marginRight=parseInt(attrNS(pgMar,'right')||'1440',10);
+      marginBottom=parseInt(attrNS(pgMar,'bottom')||'1440',10);
+      marginLeft=parseInt(attrNS(pgMar,'left')||'1440',10);
+    }
   }
-  pdfFontsReady=true;
-}
+  // twips -> px (1 twip = 1/1440 inch, 1px = 1/96 inch) => px = twips * 96/1440
+  const twipToPx = t => Math.round(t * 96 / 1440);
+  const pageWPx=twipToPx(pageW), pageHPx=twipToPx(pageH);
+  const mt=twipToPx(marginTop), mr=twipToPx(marginRight), mb=twipToPx(marginBottom), ml=twipToPx(marginLeft);
 
-// Parse Mammoth HTML into a list of blocks: {text, bold, italic} runs separated by paragraph breaks.
-function htmlToBlocks(html){
-  const div=document.createElement('div'); div.innerHTML=html;
-  const blocks=[];
-  const isBlockTag = (tag)=>
-    ['p','div','h1','h2','h3','h4','h5','h6','li','tr','table','ul','ol'].includes(tag);
+  // --- paragraph properties ---
+  function readParaProps(pEl){
+    const pPr=firstNS(pEl,'pPr');
+    const o={align:'left', spacingBefore:0, spacingAfter:0, line:null, lineRule:'auto', indLeft:0, indFirstLine:0};
+    if(!pPr) return o;
+    // alignment: w:jc w:val = 0/left, 1/center, 2/right, 3/both(justify)
+    const jc=firstNS(pPr,'jc');
+    if(jc){
+      const v=attrNS(jc,'val');
+      if(v==='1') o.align='center';
+      else if(v==='2') o.align='right';
+      else if(v==='3') o.align='justify';
+    }
+    // spacing
+    const sp=firstNS(pPr,'spacing');
+    if(sp){
+      if(sp.hasAttributeNS(NS,'before')) o.spacingBefore=parseInt(attrNS(sp,'before'),10);
+      if(sp.hasAttributeNS(NS,'after')) o.spacingAfter=parseInt(attrNS(sp,'after'),10);
+      if(sp.hasAttributeNS(NS,'line')) o.line=parseInt(attrNS(sp,'line'),10);
+      if(sp.hasAttributeNS(NS,'lineRule')) o.lineRule=attrNS(sp,'lineRule');
+    }
+    // indent
+    const ind=firstNS(pPr,'ind');
+    if(ind){
+      if(ind.hasAttributeNS(NS,'left')) o.indLeft=parseInt(attrNS(ind,'left'),10);
+      if(ind.hasAttributeNS(NS,'firstLine')) o.indFirstLine=parseInt(attrNS(ind,'firstLine'),10);
+    }
+    return o;
+  }
 
-  // Recursively walk a node, accumulating text runs into `blocks`.
-  // `bold`/`italic` are inherited from parent formatting elements.
-  function walk(node, bold, italic){
-    node.childNodes.forEach(ch=>{
-      if(ch.nodeType===3){ // text node
-        const t=ch.textContent;
-        if(t && t.trim()!==''){
-          blocks.push({text:t, bold, italic});
-        }
-      } else if(ch.nodeType===1){ // element
-        const tag=ch.tagName.toLowerCase();
-        let b=bold, i=italic;
-        if(tag==='b'||tag==='strong') b=true;
-        if(tag==='i'||tag==='em') i=true;
+  // --- run properties -> inline style ---
+  function runStyle(rPr){
+    const s={bold:false, italic:false, size:null};
+    if(!rPr) return s;
+    if(byNS(rPr,'b').length) s.bold=true;
+    if(byNS(rPr,'i').length) s.italic=true;
+    const sz=firstNS(rPr,'sz');
+    if(sz) s.size=parseInt(attrNS(sz,'val'),10)/2; // half-points -> points
+    return s;
+  }
 
-        // For block-level elements: recurse into children, then emit ONE paragraph break
-        // (not per-child, to avoid double spacing). The break is emitted once per block element.
-        if(isBlockTag(tag)){
-          walk(ch, b, i);
-          // Avoid consecutive duplicate paragraph breaks.
-          if(blocks.length===0 || !blocks[blocks.length-1].paragraph){
-            blocks.push({paragraph:true});
-          }
-          return;
-        }
-
-        // Inline element (no children): emit as its own run.
-        if(ch.childNodes.length===0){
-          const t=(ch.textContent||'').trim();
-          if(t) blocks.push({text:t, bold:b, italic:i});
-        } else {
-          walk(ch, b, i);
-        }
+  // --- build HTML for one paragraph ---
+  function buildParagraph(pEl){
+    const pp=readParaProps(pEl);
+    const runs=byNS(pEl,'r');
+    let inner='';
+    for(const r of runs){
+      const rPr=firstNS(r,'rPr');
+      const st=runStyle(rPr);
+      // collect text from w:t (and w:tab / w:br)
+      let txt='';
+      const ts=byNS(r,'t');
+      for(const t of ts){ txt += t.textContent; }
+      // tabs
+      const tabs=byNS(r,'tab');
+      for(let i=0;i<tabs.length;i++) txt += '\t';
+      // line breaks within run
+      const brs=byNS(r,'br');
+      for(let i=0;i<brs.length;i++) txt += '\n';
+      const styleParts=[];
+      if(st.bold) styleParts.push('font-weight:700');
+      if(st.italic) styleParts.push('font-style:italic');
+      if(st.size) styleParts.push(`font-size:${st.size}pt`);
+      const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
+      // escape text, keep tabs/newlines for CSS white-space:pre-wrap
+      const esc = txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      inner += `<span${styleAttr}>${esc}</span>`;
+    }
+    if(!inner.trim()) return '';
+    // paragraph style
+    const pStyleParts=[`text-align:${pp.align}`];
+    if(pp.spacingBefore) pStyleParts.push(`margin-top:${twipToPx(pp.spacingBefore)}px`);
+    if(pp.spacingAfter) pStyleParts.push(`margin-bottom:${twipToPx(pp.spacingAfter)}px`);
+    if(pp.line){
+      if(pp.lineRule==='exact'||pp.lineRule==='atLeast'){
+        pStyleParts.push(`line-height:${twipToPx(pp.line)}px`);
+      } else {
+        pStyleParts.push(`line-height:${pp.line/240}`); // 240 = single
       }
-    });
-  }
-  walk(div, false, false);
-  return blocks;
-}
-
-// Convert DOCX to image(s) via PDF, preserving exact A4 proportions like Word.
-// Returns an array of image blobs (one per page).
-async function docxToImages(html, imgFmt){
-  const pdfBlob=await docxToPdf(html);
-  const buf=await pdfBlob.arrayBuffer();
-  return pdfToImages(buf, imgFmt);
-}
-
-// Render DOCX content to a real-text PDF using embedded Cyrillic font
-async function docxToPdf(html){
-  const { jsPDF } = window.jspdf;
-  const doc=new jsPDF({unit:'pt', format:'a4'});
-  registerFonts(doc);
-  const pageW=doc.internal.pageSize.getWidth();
-  const margin=46; // ~1.6cm
-  const usableW=pageW-2*margin;
-  const fontSize=11;
-  doc.setFont('PTSans','normal'); doc.setFontSize(fontSize);
-
-  const blocks=htmlToBlocks(html);
-  let x=margin, y=margin+fontSize;
-  let lineH=fontSize*1.5;      // 16.5pt — between lines inside a paragraph (as in Word/example)
-  let paraGap=fontSize*3;      // 33pt — between paragraphs (as in example)
-
-  function newLine(gap){
-    if(y+gap>doc.internal.pageSize.getHeight()-margin){
-      doc.addPage(); y=margin+fontSize;
     } else {
-      y+=gap;
+      pStyleParts.push('line-height:1.5');
     }
+    if(pp.indLeft) pStyleParts.push(`padding-left:${twipToPx(pp.indLeft)}px`);
+    if(pp.indFirstLine) pStyleParts.push(`text-indent:${twipToPx(pp.indFirstLine)}px`);
+    return `<p style="${pStyleParts.join(';')};white-space:pre-wrap;margin:0">${inner}</p>`;
   }
 
-  for(const b of blocks){
-    if(b.paragraph){ newLine(paraGap); continue; }
-    const style = (b.bold?'bold':'')+(b.italic?'italic':'');
-    const text=b.text.replace(/\s+/g,' ').trim();
-    if(!text) continue;
-    doc.setFont('PTSans', style||'normal');
-    const lines=doc.splitTextToSize(text, usableW);
-    for(const line of lines){
-      if(y>doc.internal.pageSize.getHeight()-margin){
-        doc.addPage(); y=margin+fontSize;
-        doc.setFont('PTSans', style||'normal');
-      }
-      doc.text(line, x, y);
-      y+=lineH;
-    }
+  // --- iterate body paragraphs ---
+  const body=firstNS(dom,'body');
+  const paras=body ? byNS(body,'p') : [];
+  let htmlBody='';
+  for(const p of paras){
+    htmlBody += buildParagraph(p);
   }
-  return doc.output('blob');
+
+  // assemble full HTML with page container
+  const fontSize = 11; // default body pt
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;padding:0;}
+    body{font-family:'PT Sans',Arial,Helvetica,sans-serif;font-size:${fontSize}pt;color:#000;background:#fff;}
+    .docpage{width:${pageWPx}px;min-height:${pageHPx}px;box-sizing:border-box;padding:${mt}px ${mr}px ${mb}px ${ml}px;overflow:hidden;}
+    p{margin:0;}
+  </style></head><body><div class="docpage">${htmlBody}</div></body></html>`;
+}
+// Convert DOCX to image(s) via html2canvas rendering, preserving exact A4
+// proportions and Word-like layout. Returns an array of image blobs (one per page).
+async function docxToImages(html, imgFmt){
+  const canvases=await renderHtmlToPageCanvases(html);
+  const blobs=[];
+  for(const c of canvases){
+    const mime = imgFmt==='png'?'image/png': imgFmt==='webp'?'image/webp':'image/jpeg';
+    blobs.push(await canvasToBlob(c, mime, $('quality').value/100));
+  }
+  return blobs;
+}
+
+// Render DOCX HTML to a PDF via html2canvas (browser-rendered, so fonts,
+// alignment and spacing are exact). The canvas is sliced into A4 pages.
+async function docxToPdf(html){
+  const canvases=await renderHtmlToPageCanvases(html);
+  const { jsPDF } = window.jspdf;
+  const pdf=new jsPDF({unit:'pt', format:'a4'});
+  const pageW=pdf.internal.pageSize.getWidth();
+  for(const c of canvases){
+    const dataUrl=c.toDataURL('image/jpeg',0.92);
+    pdf.addImage(dataUrl,'JPEG',0,0,pageW, pageW*c.height/c.width);
+    if(canvases.length>1) pdf.addPage();
+  }
+  // remove the trailing blank page if more than one (addPage after last)
+  if(canvases.length>1) pdf.deletePage(pdf.getNumberOfPages());
+  return pdf.output('blob');
+}
+
+// Render an HTML string to a set of A4-page canvases using html2canvas.
+// The HTML is rendered at A4 width (800px) then sliced vertically into
+// page-height bands, each band becoming one page canvas.
+async function renderHtmlToPageCanvases(html){
+  const box=$('hiddenRender');
+  // Render at A4 width. 800px ~ A4 width at 96dpi scaled.
+  box.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:#fff;padding:0;font-family:\"PT Sans\",Arial,Helvetica,sans-serif;font-size:11pt;color:#000;line-height:1.5;box-sizing:border-box;white-space:normal;';
+  box.innerHTML=html;
+  // Ensure the PT Sans web font is fully loaded before rendering (avoids tofu/missing glyphs).
+  try{ await document.fonts.ready; }catch(e){}
+  await new Promise(r=>setTimeout(r,120));
+  const canvas=await html2canvas(box,{scale:2, useCORS:true, backgroundColor:'#ffffff', windowWidth:800, logging:false});
+  const cw=canvas.width;
+  // A4 aspect ratio: width:height = 1:1.414. At 800px render width, page height = 800*1.414.
+  const pageHPx = cw * Math.sqrt(2); // A4 portrait
+  const canvases=[];
+  let y=0;
+  while(y<canvas.height){
+    const sliceH=Math.min(pageHPx, canvas.height-y);
+    const slice=document.createElement('canvas');
+    slice.width=cw; slice.height=sliceH;
+    const ctx=slice.getContext('2d');
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(0,0,cw,sliceH);
+    ctx.drawImage(canvas,0,y,cw,sliceH,0,0,cw,sliceH);
+    canvases.push(slice);
+    y+=pageHPx;
+  }
+  return canvases;
 }
 async function docxToText(arrayBuffer){
   const res=await mammoth.extractRawText({arrayBuffer});
