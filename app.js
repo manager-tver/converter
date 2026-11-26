@@ -388,11 +388,152 @@ async function docxToHtml(arrayBuffer){
       if(txt.trim()) footnotes[id]=txt;
     }
   }catch(e){}
+  // --- load images (rId -> data URL) so drawings/textboxes can be rendered ---
+  const images={};
+  try{
+    const relsXml=await zip.file('word/_rels/document.xml.rels').async('string');
+    const rdom=new DOMParser().parseFromString(relsXml,'application/xml');
+    const relNS='http://schemas.openxmlformats.org/package/2006/relationships';
+    for(const rel of Array.from(rdom.getElementsByTagNameNS(relNS,'Relationship'))){
+      // Relationship attributes (Id/Type/Target) are unqualified in the package
+      // namespace, so read them with getAttribute, not getAttributeNS.
+      const id=rel.getAttribute('Id');
+      const type=rel.getAttribute('Type');
+      const target=rel.getAttribute('Target');
+      if(id && target && type && type.indexOf('/image')>=0){
+        let t=target;
+        if(t.charAt(0)==='/') t=t.slice(1);
+        else if(t.indexOf('word/')!==0) t='word/'+t;
+        const f=zip.file(t);
+        if(f){
+          const buf=await f.async('arraybuffer');
+          let mime='image/png';
+          const ext=(t.split('.').pop()||'').toLowerCase();
+          if(ext==='jpg'||ext==='jpeg') mime='image/jpeg';
+          else if(ext==='gif') mime='image/gif';
+          else if(ext==='webp') mime='image/webp';
+          // build data URL from bytes
+          const bytes=new Uint8Array(buf);
+          let bin=''; const CH=0x8000;
+          for(let i=0;i<bytes.length;i+=CH) bin+=String.fromCharCode.apply(null, bytes.subarray(i,i+CH));
+          images[id]='data:'+mime+';base64,'+btoa(bin);
+        }
+      }
+    }
+  }catch(e){}
+
   const NS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   // namespace-aware helpers (Clark notation {ns}tag is NOT supported by getElementsByTagName in browsers)
   const byNS=(parent,name)=>Array.from(parent.getElementsByTagNameNS(NS,name));
   const firstNS=(parent,name)=>byNS(parent,name)[0]||null;
   const attrNS=(el,name)=>el.getAttributeNS(NS,name);
+
+  // --- color + unit normalization (general: DOCX colors lack the leading '#') ---
+  // Accept "RRGGBB", "#RRGGBB", "RGB", "#RGB", named or "auto" -> returns a CSS color or null.
+  function normColor(c){
+    if(c===null||c===undefined) return null;
+    c=String(c).trim();
+    if(!c||c==='auto'||c==='inherit') return null;
+    if(c.charAt(0)==='#') c=c.slice(1);
+    if(/^[0-9a-fA-F]{6}$/.test(c)) return '#'+c.toLowerCase();
+    if(/^[0-9a-fA-F]{3}$/.test(c)) return '#'+c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+    // named color or other -> pass through lowercased
+    return c.toLowerCase();
+  }
+  // EMU -> px (1 EMU = 96/9525000 px)
+  const emuToPx = emu => Math.round(emu * 96 / 914400);
+
+  // DrawingML namespaces (used for images / textboxes)
+  const WPD='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
+  const DXF='http://schemas.openxmlformats.org/drawingml/2006/main';
+  const RNS='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const byNSn=(parent,ns,name)=>Array.from(parent.getElementsByTagNameNS(ns,name));
+  const firstNSn=(parent,ns,name)=>byNSn(parent,ns,name)[0]||null;
+
+  // Compute an anchored drawing's left/top in page px. Word offsets are relative
+  // to the column (horizontal) or paragraph/margin (vertical), which start after
+  // the page margins; CSS absolute positioning is relative to the page edge, so
+  // add the left/top margin when the anchor is relativeFrom column/margin/line.
+  function anchorOffset(anchor){
+    let left=0, top=0;
+    if(!anchor) return {left, top};
+    const ph=firstNSn(anchor,WPD,'positionH'); const pv=firstNSn(anchor,WPD,'positionV');
+    const relH=ph?ph.getAttribute('relativeFrom'):null;
+    const relV=pv?pv.getAttribute('relativeFrom'):null;
+    const oh=ph?firstNSn(ph,WPD,'posOffset'):null;
+    const ov=pv?firstNSn(pv,WPD,'posOffset'):null;
+    if(oh){
+      const off=emuToPx(parseInt(oh.textContent,10)||0);
+      left = (relH==='page') ? off : off + ml;
+    }
+    if(ov){
+      const off=emuToPx(parseInt(ov.textContent,10)||0);
+      top = (relV==='page') ? off : off + mt;
+    }
+    return {left, top};
+  }
+
+  // --- render a <w:drawing> (inline image, anchored image, or text box) ---
+  // General: handles both wp:inline and wp:anchor, and wps text boxes.
+  function renderDrawing(drEl){
+    try{
+      const ext=firstNSn(drEl,WPD,'extent');
+      if(!ext) return {html:'', h:0};
+      // cx/cy are unqualified attributes on wp:extent
+      const cx=parseInt(ext.getAttribute('cx'),10)||0;
+      const cy=parseInt(ext.getAttribute('cy'),10)||0;
+      const w=emuToPx(cx), h=emuToPx(cy);
+      // text box content (wps:wsp > wps:txbx > w:txbxContent)
+      const txbx=firstNSn(drEl,NS,'txbxContent');
+      if(txbx){
+        let innerTx='';
+        for(const p of Array.from(txbx.childNodes)){
+          if(p.nodeType===1 && p.localName==='p' && p.namespaceURI===NS){
+            innerTx += buildParagraph(p);
+          }
+        }
+        const anchor=firstNSn(drEl,WPD,'anchor');
+        const off=anchorOffset(anchor);
+        return {html:`<div style="position:absolute;left:${off.left}px;top:${Math.max(0,off.top)}px;width:${w}px;min-height:${h}px;">${innerTx}</div>`, h};
+      }
+      // image: get r:embed from a:blip
+      const blip=firstNSn(drEl,DXF,'blip');
+      let src='';
+      if(blip){ const rid=blip.getAttributeNS(RNS,'embed'); if(rid && images[rid]) src=images[rid]; }
+      if(!src) return '';
+      const anchor=firstNSn(drEl,WPD,'anchor');
+      const isAnchor=!!anchor;
+      let extra='';
+      if(isAnchor){
+        const off=anchorOffset(anchor);
+        extra=`position:absolute;left:${off.left}px;top:${Math.max(0,off.top)}px;`;
+      }
+      return {html:`<img src="${src}" width="${w}" height="${h}" style="${extra}display:${isAnchor?'block':'inline-block'};vertical-align:middle;"/>`, h};
+    }catch(e){ return {html:'', h:0}; }
+  }
+
+  // true if el is nested inside a w:txbxContent within root (text-box inner text
+  // is rendered by renderDrawing, not as a normal paragraph run)
+  function isInsideTextbox(el, root){
+    let n=el.parentNode;
+    while(n && n!==root){
+      if(n.nodeType===1 && n.localName==='txbxContent') return true;
+      n=n.parentNode;
+    }
+    return false;
+  }
+  // Markup-compatibility: mc:AlternateContent carries a Choice (preferred, e.g. a
+  // text box) and a Fallback (plain content for older renderers). Word renders
+  // only the Choice, so skip anything nested inside mc:Fallback to avoid duplication.
+  const MCNS='http://schemas.openxmlformats.org/markup-compatibility/2006';
+  function isInsideFallback(el, root){
+    let n=el.parentNode;
+    while(n && n!==root){
+      if(n.nodeType===1 && n.localName==='Fallback' && n.namespaceURI===MCNS) return true;
+      n=n.parentNode;
+    }
+    return false;
+  }
 
   // Map a DOCX font name to an embedded web font (fonts.js). Times New Roman
   // -> Tinos (metric-compatible), Calibri -> Carlito (metric-compatible),
@@ -497,6 +638,8 @@ async function docxToHtml(arrayBuffer){
     if(sz) s.size=parseInt(attrNS(sz,'val'),10)/2; // half-points -> points
     const rf=firstNS(rPr,'rFonts');
     if(rf){ const ascii=attrNS(rf,'ascii'); const hAnsi=attrNS(rf,'hAnsi'); s.font = (ascii||hAnsi)||s.font; }
+    const colEl=firstNS(rPr,'color');
+    if(colEl) s.color=normColor(attrNS(colEl,'val'));
     return s;
   }
 
@@ -554,11 +697,23 @@ async function docxToHtml(arrayBuffer){
     if(!styleObj && stylesMap.defaultParaStyle){
       styleObj=stylesMap.styles[stylesMap.defaultParaStyle]||null;
     }
-    const runs=byNS(pEl,'r');
+    const runs=byNS(pEl,'r').filter(r=>!isInsideTextbox(r,pEl) && !isInsideFallback(r,pEl));
     // collect raw text + per-run style, preserving tab/br markers
     let inner='';
+    let drawingsHtml='';
+    let maxDrawingH=0;
     const textRuns=[];
     for(const r of runs){
+      // render any embedded drawing (image / text box) - kept separate so the
+      // tabs branch (which reassigns inner) does not drop it.
+      const drawing=firstNS(r,'drawing');
+      if(drawing){
+        const dRes=renderDrawing(drawing);
+        if(dRes && dRes.html){
+          drawingsHtml += dRes.html;
+          if(dRes.h>maxDrawingH) maxDrawingH=dRes.h;
+        }
+      }
       const rPr=firstNS(r,'rPr');
       const st=runStyle(rPr, styleObj);
       let txt='';
@@ -616,6 +771,7 @@ async function docxToHtml(arrayBuffer){
         if(st.bold) sp.push('font-weight:700');
         if(st.italic) sp.push('font-style:italic');
         if(st.size) sp.push(`font-size:${st.size}pt`);
+        if(st.color) sp.push(`color:${st.color}`);
         return sp.join(';');
       }
       // Render as a relative container. Leading text (before first tab) is inline
@@ -660,12 +816,15 @@ async function docxToHtml(arrayBuffer){
         if(tr.st.bold) styleParts.push('font-weight:700');
         if(tr.st.italic) styleParts.push('font-style:italic');
         if(tr.st.size) styleParts.push(`font-size:${tr.st.size}pt`);
+        if(tr.st.color) styleParts.push(`color:${tr.st.color}`);
         const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
         inner += `<span${styleAttr}>${renderText(tr.txt)}</span>`;
       }
       if(numPrefix) inner = `<span>${numPrefix}</span> ` + inner;
     }
-    const hasText = inner.replace(/<[^>]+>/g,'').trim().length>0;
+    // drawings survive the tabs-branch reassignment; merge them back in
+    inner += drawingsHtml;
+    const hasText = inner.replace(/<[^>]+>/g,'').trim().length>0 || inner.indexOf('<img')>=0 || inner.indexOf('<div')>=0;
     // paragraph style
     const align = pp.align || 'left';
     // Effective paragraph font-size: first non-empty run size, else paragraph-
@@ -704,6 +863,9 @@ async function docxToHtml(arrayBuffer){
     }
     if(pp.indLeft) pStyleParts.push(`padding-left:${twipToPx(pp.indLeft)}px`);
     if(pp.indFirstLine) pStyleParts.push(`text-indent:${twipToPx(pp.indFirstLine)}px`);
+    // Anchored drawings (header logo / text box) are position:absolute and take
+    // no flow height; reserve their height so body content does not overlap them.
+    if(maxDrawingH>0) pStyleParts.push(`min-height:${maxDrawingH}px`);
     return `<p style="${pStyleParts.join(';')};margin:0">${inner}</p>`;
   }
 
@@ -729,10 +891,10 @@ async function docxToHtml(arrayBuffer){
           if(el){
             const val=attrNS(el,'val');
             const sz=attrNS(el,'sz');
-            const color=attrNS(el,'color');
+            const color=normColor(attrNS(el,'color')) || '#000';
             if(val && val!=='none'){
               const s=(sz?parseInt(sz,10)/8:1)+'px';
-              borders[edge]=`${s} solid ${color||'#000'}`;
+              borders[edge]=`${s} solid ${color}`;
             } else {
               borders[edge]='none';
             }
@@ -811,7 +973,7 @@ async function docxToHtml(arrayBuffer){
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     html,body{margin:0;padding:0;}
     body{font-family:'PT Sans',Arial,Helvetica,sans-serif;font-size:${fontSize}pt;color:#000;background:#fff;}
-    .docpage{width:${pageWPx}px;min-height:${pageHPx}px;box-sizing:border-box;padding:${mt}px ${mr}px ${mb}px ${ml}px;overflow:hidden;display:flex;flex-direction:column;}
+    .docpage{width:${pageWPx}px;min-height:${pageHPx}px;box-sizing:border-box;padding:${mt}px ${mr}px ${mb}px ${ml}px;overflow:hidden;display:flex;flex-direction:column;position:relative;}
     .docpage>.docbody{flex:0 1 auto;}
     .docpage>.docfoot{flex:0 0 auto;margin-top:auto;}
     p{margin:0;}
