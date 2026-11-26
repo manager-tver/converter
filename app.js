@@ -317,6 +317,21 @@ async function docxToHtml(arrayBuffer){
   let numbering={abstracts:{}, numToAbs:{}};
   try{ const sx=await zip.file('word/styles.xml').async('string'); stylesMap=parseStyles(sx); }catch(e){}
   try{ const nx=await zip.file('word/numbering.xml').async('string'); numbering=parseNumbering(nx); }catch(e){}
+  // Load footnotes (referenced text appears at bottom of page).
+  const FNS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  let footnotes={};
+  try{
+    const fx=await zip.file('word/footnotes.xml').async('string');
+    const fdom=new DOMParser().parseFromString(fx,'application/xml');
+    for(const fn of Array.from(fdom.getElementsByTagNameNS(FNS,'footnote'))){
+      const id=fn.getAttributeNS(FNS,'id');
+      if(id===null || id==='0' || id==='-1') continue; // skip separator/continuation
+      // collect text of the footnote paragraph
+      let txt='';
+      for(const tEl of Array.from(fn.getElementsByTagNameNS(FNS,'t'))) txt += tEl.textContent||'';
+      if(txt.trim()) footnotes[id]=txt;
+    }
+  }catch(e){}
   const NS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   // namespace-aware helpers (Clark notation {ns}tag is NOT supported by getElementsByTagName in browsers)
   const byNS=(parent,name)=>Array.from(parent.getElementsByTagNameNS(NS,name));
@@ -480,6 +495,12 @@ async function docxToHtml(arrayBuffer){
       for(let i=0;i<tabs.length;i++) txt += '\t';
       const brs=byNS(r,'br');
       for(let i=0;i<brs.length;i++) txt += '\n';
+      // footnote reference -> superscript [n] marker in the text
+      const fr=firstNS(r,'footnoteReference');
+      if(fr){
+        const fid=attrNS(fr,'id');
+        if(fid!==null && footnotes[fid]) txt += `⟦${fid}⟧`;
+      }
       textRuns.push({txt, st});
     }
     // If numbering present, prefix with the list label.
@@ -490,6 +511,12 @@ async function docxToHtml(arrayBuffer){
     }
     // Determine if we have tabs in content OR defined tab stops -> render with absolute positioning
     const hasTabs = textRuns.some(t=>t.txt.indexOf('\t')>=0) || (pp.tabs && pp.tabs.length>0);
+    function escOf(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    // escape + render footnote markers ⟦id⟧ as superscript [n]
+    function renderText(s){
+      const esc=escOf(s);
+      return esc.replace(/⟦(\d+)⟧/g,'<sup style="font-size:0.65em;line-height:0">[$1]</sup>');
+    }
     if(hasTabs){
       // Build segments split by tab characters, keeping per-segment style.
       const segs=[];
@@ -509,14 +536,13 @@ async function docxToHtml(arrayBuffer){
       if(stopPx.length===0){
         stopPx=[{pos: contentW, val:'right'}];
       }
-      function segStyle(st){
+      function decl(st){
         const sp=[];
         if(st.bold) sp.push('font-weight:700');
         if(st.italic) sp.push('font-style:italic');
         if(st.size) sp.push(`font-size:${st.size}pt`);
-        return sp.length?` style="${sp.join(';')}"`:'';
+        return sp.join(';');
       }
-      function escOf(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
       // Render as a relative container. Leading text (before first tab) is inline
       // at left:0; each segment after a tab is absolutely positioned at its stop.
       let row='<div style="position:relative;width:100%;min-height:1.5em;white-space:nowrap;">';
@@ -527,7 +553,8 @@ async function docxToHtml(arrayBuffer){
         if(segs[i].text==='\t'){ tt++; continue; }
         if(tt===0){
           // leading text: inline, left-aligned, accumulate
-          leading += `<span${segStyle(segs[i].st)}>${escOf(segs[i].text)}</span>`;
+          const d=decl(segs[i].st);
+          leading += `<span${d?` style="${d}"`:''}>${renderText(segs[i].text)}</span>`;
         } else {
           // after a tab: position per the corresponding stop
           const sp=stopPx[Math.min(tt-1, stopPx.length-1)];
@@ -535,21 +562,21 @@ async function docxToHtml(arrayBuffer){
           if(sp.val==='right'){ posPx=sp.pos; align='right'; }
           else if(sp.val==='center'){ posPx=sp.pos; align='center'; }
           else { posPx=sp.pos; align='left'; }
-          const ss=segStyle(segs[i].st);
+          const d=decl(segs[i].st);
           let anchorStyle;
           if(align==='right'){
-            anchorStyle=`position:absolute;right:${Math.max(0,contentW-posPx)}px;${ss}`;
+            anchorStyle=`position:absolute;right:${Math.max(0,contentW-posPx)}px;${d}`;
           } else if(align==='center'){
-            anchorStyle=`position:absolute;left:${posPx}px;transform:translateX(-50%);${ss}`;
+            anchorStyle=`position:absolute;left:${posPx}px;transform:translateX(-50%);${d}`;
           } else {
-            anchorStyle=`position:absolute;left:${posPx}px;${ss}`;
+            anchorStyle=`position:absolute;left:${posPx}px;${d}`;
           }
-          segsHtml += `<span style="${anchorStyle}">${escOf(segs[i].text)}</span>`;
+          segsHtml += `<span style="${anchorStyle}">${renderText(segs[i].text)}</span>`;
         }
       }
       if(leading) segsHtml = leading + segsHtml;
       row += segsHtml + '</div>';
-      inner = (numPrefix?`<span style="font-weight:700">${numPrefix}</span> `:'') + row;
+      inner = (numPrefix?`<span>${numPrefix}</span> `:'') + row;
     } else {
       // plain (no tabs): render runs inline, with number prefix
       for(const tr of textRuns){
@@ -558,10 +585,9 @@ async function docxToHtml(arrayBuffer){
         if(tr.st.italic) styleParts.push('font-style:italic');
         if(tr.st.size) styleParts.push(`font-size:${tr.st.size}pt`);
         const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
-        const esc = tr.txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        inner += `<span${styleAttr}>${esc}</span>`;
+        inner += `<span${styleAttr}>${renderText(tr.txt)}</span>`;
       }
-      if(numPrefix) inner = `<span style="font-weight:700">${numPrefix}</span> ` + inner;
+      if(numPrefix) inner = `<span>${numPrefix}</span> ` + inner;
     }
     if(!inner.replace(/<[^>]+>/g,'').trim()) return '';
     // paragraph style
@@ -573,10 +599,13 @@ async function docxToHtml(arrayBuffer){
       if(pp.lineRule==='exact'||pp.lineRule==='atLeast'){
         pStyleParts.push(`line-height:${twipToPx(pp.line)}px`);
       } else {
-        pStyleParts.push(`line-height:${pp.line/240}`); // 240 = single
+        // lineRule=auto: w:line=240 means single spacing. Word's single line
+        // height is the font's natural line height (~1.2em), NOT 1em, so a
+        // plain line/240 would compress text vs Word. Scale by a natural factor.
+        pStyleParts.push(`line-height:${Math.round((pp.line/240)*1.2*100)/100}`);
       }
     } else {
-      pStyleParts.push('line-height:1.5');
+      pStyleParts.push('line-height:1.2');
     }
     if(pp.indLeft) pStyleParts.push(`padding-left:${twipToPx(pp.indLeft)}px`);
     if(pp.indFirstLine) pStyleParts.push(`text-indent:${twipToPx(pp.indFirstLine)}px`);
@@ -596,7 +625,7 @@ async function docxToHtml(arrayBuffer){
     }
     // borders from tblPr/tblBorders (val, sz, color)
     const tblPr=firstNS(tblEl,'tblPr');
-    let borders={top:'1px solid #000',left:'1px solid #000',bottom:'1px solid #000',right:'1px solid #000',insideH:'1px solid #000',insideV:'1px solid #000'};
+    let borders={top:'none',left:'none',bottom:'none',right:'none',insideH:'none',insideV:'none'};
     if(tblPr){
       const b=firstNS(tblPr,'tblBorders');
       if(b){
@@ -622,7 +651,7 @@ async function docxToHtml(arrayBuffer){
     let tableW='100%';
     if(colW.length && colW.every(w=>w>0)){
       const tw=colW.reduce((a,b)=>a+b,0);
-      if(tw>0) tableW=`${tw}px`;
+      if(tw>0) tableW=`${twipToPx(tw)}px`;
     }
     let rowsHtml='';
     const trs=byNS(tblEl,'tr');
@@ -670,6 +699,18 @@ async function docxToHtml(arrayBuffer){
     }
   }
 
+  // --- render footnote texts at bottom of page (after body content) ---
+  const escFoot = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let footnotesHtml='';
+  if(footnotes && Object.keys(footnotes).length){
+    footnotesHtml = `<div style="margin-top:18px;border-top:0.5pt solid #999;padding-top:6px;">`;
+    const sortedIds=Object.keys(footnotes).map(Number).sort((a,b)=>a-b);
+    for(const id of sortedIds){
+      footnotesHtml += `<p style="font-size:8pt;line-height:1.2;margin:0 0 4px 0;"><span style="font-weight:700">[${id}]</span> ${escFoot(footnotes[id])}</p>`;
+    }
+    footnotesHtml += `</div>`;
+  }
+
   // assemble full HTML with page container
   const fontSize = 11; // default body pt
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -677,7 +718,7 @@ async function docxToHtml(arrayBuffer){
     body{font-family:'PT Sans',Arial,Helvetica,sans-serif;font-size:${fontSize}pt;color:#000;background:#fff;}
     .docpage{width:${pageWPx}px;min-height:${pageHPx}px;box-sizing:border-box;padding:${mt}px ${mr}px ${mb}px ${ml}px;overflow:hidden;}
     p{margin:0;}
-  </style></head><body><div class="docpage">${htmlBody}</div></body></html>`;
+  </style></head><body><div class="docpage">${htmlBody}${footnotesHtml}</div></body></html>`;
 }
 // Convert DOCX to image(s) via html2canvas rendering, preserving exact A4
 // proportions and Word-like layout. Returns an array of image blobs (one per page).
