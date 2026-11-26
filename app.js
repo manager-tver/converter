@@ -206,24 +206,20 @@ async function docxToHtml(arrayBuffer){
 }
 // --- PT Sans (Cyrillic) font registration for jsPDF ---
 let pdfFontsReady=false;
-async function ensurePdfFonts(){
+// registerFonts must be called on a jsPDF document instance
+function registerFonts(doc){
   if(pdfFontsReady) return;
-  const { jsPDF } = window.jspdf;
   const fam = window.__pdfFonts && window.__pdfFonts.PTSans;
   if(!fam){ throw new Error('Кириллический шрифт не найден'); }
   const defs={
     normal: fam.normal, bold: fam.bold, italic: fam.italic, bolditalic: fam.bolditalic
   };
-  const vfsNames={};
   for(const style of Object.keys(defs)){
     const vfsName = 'PTSans-'+style+'.ttf';
-    vfsNames[style]=vfsName;
-    jsPDF.addFileToVFS(vfsName, defs[style]);
+    // addFileToVFS and addFont are instance methods in jsPDF 2.5.x
+    doc.addFileToVFS(vfsName, defs[style]);
+    doc.addFont(vfsName, 'PTSans', style);
   }
-  jsPDF.addFont('PTSans-normal.ttf','PTSans','normal');
-  jsPDF.addFont('PTSans-bold.ttf','PTSans','bold');
-  jsPDF.addFont('PTSans-italic.ttf','PTSans','italic');
-  jsPDF.addFont('PTSans-bolditalic.ttf','PTSans','bolditalic');
   pdfFontsReady=true;
 }
 
@@ -283,9 +279,9 @@ function htmlToBlocks(html){
 
 // Render DOCX content to a real-text PDF using embedded Cyrillic font
 async function docxToPdf(html){
-  await ensurePdfFonts();
   const { jsPDF } = window.jspdf;
   const doc=new jsPDF({unit:'pt', format:'a4'});
+  registerFonts(doc);
   const pageW=doc.internal.pageSize.getWidth();
   const margin=46; // ~1.6cm
   const usableW=pageW-2*margin;
