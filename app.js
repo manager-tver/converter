@@ -216,14 +216,107 @@ async function textToDocx(text){
   const doc=new Document({sections:[{children: text.split('\n').map(l=>new Paragraph({children:[new TextRun(l||' ')]}))}]});
   return await Packer.toBlob(doc);
 }
+// Parse word/styles.xml -> map of styleId -> {align, spacing, line, ind, sz, b, i}
+// and default run properties.
+function parseStyles(stylesXml){
+  const dom=new DOMParser().parseFromString(stylesXml,'application/xml');
+  const NS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const byNS=(p,n)=>Array.from(p.getElementsByTagNameNS(NS,n));
+  const firstNS=(p,n)=>byNS(p,n)[0]||null;
+  const attrNS=(el,n)=>el.getAttributeNS(NS,n);
+  const styles={};
+  let defaultR={sz:null,b:false,i:false};
+  // docDefaults
+  const dd=firstNS(dom,'docDefaults');
+  if(dd){
+    const rPr=firstNS(dd,'rPr');
+    if(rPr){
+      if(byNS(rPr,'sz').length){ const sz=firstNS(rPr,'sz'); if(sz) defaultR.sz=parseInt(attrNS(sz,'val'),10)/2; }
+      if(byNS(rPr,'b').length) defaultR.b=true;
+      if(byNS(rPr,'i').length) defaultR.i=true;
+    }
+  }
+  for(const st of byNS(dom,'style')){
+    const id=attrNS(st,'styleId');
+    if(!id) continue;
+    const o={align:null, spacingBefore:0, spacingAfter:0, line:null, lineRule:'auto',
+      indLeft:0, indFirstLine:0, sz:null, b:false, i:false};
+    const pPr=firstNS(st,'pPr');
+    if(pPr){
+      const jc=firstNS(pPr,'jc'); if(jc) o.align=attrNS(jc,'val');
+      const sp=firstNS(pPr,'spacing');
+      if(sp){
+        if(sp.hasAttributeNS(NS,'before')) o.spacingBefore=parseInt(attrNS(sp,'before'),10);
+        if(sp.hasAttributeNS(NS,'after')) o.spacingAfter=parseInt(attrNS(sp,'after'),10);
+        if(sp.hasAttributeNS(NS,'line')) o.line=parseInt(attrNS(sp,'line'),10);
+        if(sp.hasAttributeNS(NS,'lineRule')) o.lineRule=attrNS(sp,'lineRule');
+      }
+      const ind=firstNS(pPr,'ind');
+      if(ind){
+        if(ind.hasAttributeNS(NS,'left')) o.indLeft=parseInt(attrNS(ind,'left'),10);
+        if(ind.hasAttributeNS(NS,'firstLine')) o.indFirstLine=parseInt(attrNS(ind,'firstLine'),10);
+      }
+    }
+    const rPr=firstNS(st,'rPr');
+    if(rPr){
+      if(byNS(rPr,'sz').length){ const sz=firstNS(rPr,'sz'); if(sz) o.sz=parseInt(attrNS(sz,'val'),10)/2; }
+      if(byNS(rPr,'b').length) o.b=true;
+      if(byNS(rPr,'i').length) o.i=true;
+    }
+    styles[id]=o;
+  }
+  return {styles, defaultR};
+}
+
+// Parse word/numbering.xml -> abstractNum (level definitions) + num (id->abstractNumId).
+function parseNumbering(numberingXml){
+  const dom=new DOMParser().parseFromString(numberingXml,'application/xml');
+  const NS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const byNS=(p,n)=>Array.from(p.getElementsByTagNameNS(NS,n));
+  const attrNS=(el,n)=>el.getAttributeNS(NS,n);
+  const abstracts={};
+  const numToAbs={};
+  for(const an of byNS(dom,'abstractNum')){
+    const id=attrNS(an,'abstractNumId');
+    const lvls={};
+    for(const lvl of byNS(an,'lvl')){
+      const ilvl=attrNS(lvl,'ilvl');
+      const fmt=firstChildText(lvl,NS,'numFmt');
+      const txt=firstChildText(lvl,NS,'lvlText');
+      const start=firstChildAttr(lvl,NS,'start');
+      lvls[ilvl]={fmt, txt, start:start?parseInt(start,10):1};
+    }
+    abstracts[id]=lvls;
+  }
+  for(const num of byNS(dom,'num')){
+    const id=attrNS(num,'numId');
+    const abs=firstChildAttr(num,NS,'abstractNumId');
+    if(id && abs) numToAbs[id]=abs;
+  }
+  return {abstracts, numToAbs};
+  function firstChildText(parent,ns,name){
+    const el=Array.from(parent.getElementsByTagNameNS(ns,name))[0];
+    return el?el.textContent:null;
+  }
+  function firstChildAttr(parent,ns,name){
+    const el=Array.from(parent.getElementsByTagNameNS(ns,name))[0];
+    return el?el.getAttributeNS(ns,name):null;
+  }
+}
+
 // Parse DOCX (Office Open XML) directly to HTML, preserving alignment,
-// bold/italic, font sizes, line spacing and page size. This gives full
-// control over layout (mammoth drops paragraph alignment, which breaks
-// centered titles and Word-like spacing).
+// bold/italic, font sizes, line spacing, list numbering, tab stops and page
+// size. Full layout control (mammoth drops paragraph alignment + numbering).
 async function docxToHtml(arrayBuffer){
   const zip=await JSZip.loadAsync(arrayBuffer);
   const docXml=await zip.file('word/document.xml').async('string');
   const dom=new DOMParser().parseFromString(docXml,'application/xml');
+  // Load styles + numbering: they carry paragraph alignment, font sizes,
+  // list numbering and tab stops that inline w:jc alone cannot express.
+  let stylesMap={styles:{}, defaultR:{sz:null,b:false,i:false}};
+  let numbering={abstracts:{}, numToAbs:{}};
+  try{ const sx=await zip.file('word/styles.xml').async('string'); stylesMap=parseStyles(sx); }catch(e){}
+  try{ const nx=await zip.file('word/numbering.xml').async('string'); numbering=parseNumbering(nx); }catch(e){}
   const NS='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   // namespace-aware helpers (Clark notation {ns}tag is NOT supported by getElementsByTagName in browsers)
   const byNS=(parent,name)=>Array.from(parent.getElementsByTagNameNS(NS,name));
@@ -249,10 +342,22 @@ async function docxToHtml(arrayBuffer){
   const pageWPx=twipToPx(pageW), pageHPx=twipToPx(pageH);
   const mt=twipToPx(marginTop), mr=twipToPx(marginRight), mb=twipToPx(marginBottom), ml=twipToPx(marginLeft);
 
-  // --- paragraph properties ---
+  // --- paragraph properties (merge paragraph style + direct properties) ---
   function readParaProps(pEl){
     const pPr=firstNS(pEl,'pPr');
-    const o={align:'left', spacingBefore:0, spacingAfter:0, line:null, lineRule:'auto', indLeft:0, indFirstLine:0};
+    // base from paragraph style (pStyle) if present
+    let o={align:null, spacingBefore:0, spacingAfter:0, line:null, lineRule:'auto', indLeft:0, indFirstLine:0};
+    const pStyle=pPr?firstNS(pPr,'pStyle'):null;
+    if(pStyle){
+      const sid=attrNS(pStyle,'val');
+      const st=stylesMap.styles[sid];
+      if(st){
+        if(st.align) o.align=st.align;
+        o.spacingBefore=st.spacingBefore; o.spacingAfter=st.spacingAfter;
+        o.line=st.line; o.lineRule=st.lineRule||'auto';
+        o.indLeft=st.indLeft; o.indFirstLine=st.indFirstLine;
+      }
+    }
     if(!pPr) return o;
     // alignment: w:jc w:val = 0/left, 1/center, 2/right, 3/both(justify)
     const jc=firstNS(pPr,'jc');
@@ -261,8 +366,9 @@ async function docxToHtml(arrayBuffer){
       if(v==='1') o.align='center';
       else if(v==='2') o.align='right';
       else if(v==='3') o.align='justify';
+      else o.align='left';
     }
-    // spacing
+    // spacing (overrides style)
     const sp=firstNS(pPr,'spacing');
     if(sp){
       if(sp.hasAttributeNS(NS,'before')) o.spacingBefore=parseInt(attrNS(sp,'before'),10);
@@ -270,18 +376,37 @@ async function docxToHtml(arrayBuffer){
       if(sp.hasAttributeNS(NS,'line')) o.line=parseInt(attrNS(sp,'line'),10);
       if(sp.hasAttributeNS(NS,'lineRule')) o.lineRule=attrNS(sp,'lineRule');
     }
-    // indent
+    // indent (overrides style)
     const ind=firstNS(pPr,'ind');
     if(ind){
       if(ind.hasAttributeNS(NS,'left')) o.indLeft=parseInt(attrNS(ind,'left'),10);
       if(ind.hasAttributeNS(NS,'firstLine')) o.indFirstLine=parseInt(attrNS(ind,'firstLine'),10);
     }
+    // numbering (w:numPr -> w:ilvl + w:numId)
+    const numPr=firstNS(pPr,'numPr');
+    if(numPr){
+      const ilvl=firstNS(numPr,'ilvl');
+      const numId=firstNS(numPr,'numId');
+      if(ilvl && numId){
+        o.num={ ilvl: parseInt(attrNS(ilvl,'val'),10)||0, numId: parseInt(attrNS(numId,'val'),10)||0 };
+      }
+    }
+    // tab stops (w:tabs > w:tab with w:val + w:pos)
+    const tabsEl=firstNS(pPr,'tabs');
+    if(tabsEl){
+      o.tabs=[];
+      for(const t of byNS(tabsEl,'tab')){
+        const val=attrNS(t,'val');
+        const pos=attrNS(t,'pos');
+        if(pos!==null) o.tabs.push({val: val||'left', pos: parseInt(pos,10)});
+      }
+    }
     return o;
   }
 
-  // --- run properties -> inline style ---
-  function runStyle(rPr){
-    const s={bold:false, italic:false, size:null};
+  // --- run properties -> inline style (default < style < direct rPr) ---
+  function runStyle(rPr, style){
+    const s={bold: stylesMap.defaultR.b||(style&&style.b), italic: stylesMap.defaultR.i||(style&&style.i), size: (style&&style.sz)||stylesMap.defaultR.sz};
     if(!rPr) return s;
     if(byNS(rPr,'b').length) s.bold=true;
     if(byNS(rPr,'i').length) s.italic=true;
@@ -290,36 +415,162 @@ async function docxToHtml(arrayBuffer){
     return s;
   }
 
+  // --- numbering counters (per numId/ilvl) ---
+  const counters={};
+  function nextNumber(numId, ilvl){
+    if(!counters[numId]) counters[numId]=[0];
+    const arr=counters[numId];
+    if(arr.length<=ilvl) arr.length=ilvl+1;
+    arr[ilvl]=(arr[ilvl]||0)+1;
+    // reset deeper levels
+    for(let i=ilvl+1;i<arr.length;i++) arr[i]=0;
+    return arr[ilvl];
+  }
+  function formatNumber(num, ilvl){
+    const absId=numbering.numToAbs[num];
+    const lvls=numbering.abstracts[absId];
+    let lvl=lvls&&lvls[ilvl];
+    if(!lvl) lvl={fmt:'decimal', txt:'%1.', start:1};
+    let n=num;
+    // decimal, lowerLetter, upperLetter, lowerRoman, upperRoman
+    if(lvl.fmt==='lowerLetter') n=String.fromCharCode(96+(n-1)%26);
+    else if(lvl.fmt==='upperLetter') n=String.fromCharCode(64+(n-1)%26);
+    else if(lvl.fmt==='lowerRoman') n=toRoman(n).toLowerCase();
+    else if(lvl.fmt==='upperRoman') n=toRoman(n);
+    let label=lvl.txt||'%1.';
+    // fill %1..%9 with current levels
+    const arr=counters[num]||[];
+    label=label.replace(/%(\d+)/g,(m,idx)=>{
+      const lv=parseInt(idx,10)-1;
+      let v=arr[lv];
+      if(v===undefined) v=1;
+      if(lvls&&lvls[lv]){
+        if(lvls[lv].fmt==='lowerLetter') v=String.fromCharCode(96+(v-1)%26);
+        else if(lvls[lv].fmt==='upperLetter') v=String.fromCharCode(64+(v-1)%26);
+        else if(lvls[lv].fmt==='lowerRoman') v=toRoman(v).toLowerCase();
+        else if(lvls[lv].fmt==='upperRoman') v=toRoman(v);
+      }
+      return String(v);
+    });
+    return label;
+  }
+  function toRoman(n){
+    const m=[[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']];
+    let r=''; for(const [v,s] of m){ while(n>=v){ r+=s; n-=v; } } return r;
+  }
+
   // --- build HTML for one paragraph ---
   function buildParagraph(pEl){
     const pp=readParaProps(pEl);
+    // resolve paragraph style for run defaults
+    const pPrEl=firstNS(pEl,'pPr');
+    let styleObj=null;
+    if(pPrEl){
+      const ps=firstNS(pPrEl,'pStyle');
+      if(ps){ const sid=attrNS(ps,'val'); styleObj=stylesMap.styles[sid]||null; }
+    }
     const runs=byNS(pEl,'r');
+    // collect raw text + per-run style, preserving tab/br markers
     let inner='';
+    const textRuns=[];
     for(const r of runs){
       const rPr=firstNS(r,'rPr');
-      const st=runStyle(rPr);
-      // collect text from w:t (and w:tab / w:br)
+      const st=runStyle(rPr, styleObj);
       let txt='';
       const ts=byNS(r,'t');
       for(const t of ts){ txt += t.textContent; }
-      // tabs
       const tabs=byNS(r,'tab');
       for(let i=0;i<tabs.length;i++) txt += '\t';
-      // line breaks within run
       const brs=byNS(r,'br');
       for(let i=0;i<brs.length;i++) txt += '\n';
-      const styleParts=[];
-      if(st.bold) styleParts.push('font-weight:700');
-      if(st.italic) styleParts.push('font-style:italic');
-      if(st.size) styleParts.push(`font-size:${st.size}pt`);
-      const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
-      // escape text, keep tabs/newlines for CSS white-space:pre-wrap
-      const esc = txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      inner += `<span${styleAttr}>${esc}</span>`;
+      textRuns.push({txt, st});
     }
-    if(!inner.trim()) return '';
+    // If numbering present, prefix with the list label.
+    let numPrefix='';
+    if(pp.num){
+      const n=nextNumber(pp.num.numId, pp.num.ilvl);
+      numPrefix=formatNumber(n, pp.num.ilvl);
+    }
+    // Determine if we have tabs in content OR defined tab stops -> render as flex row
+    const hasTabs = textRuns.some(t=>t.txt.indexOf('\t')>=0) || (pp.tabs && pp.tabs.length>0);
+    if(hasTabs){
+      // Build segments split by tab characters.
+      const segs=[];
+      for(const tr of textRuns){
+        const parts=tr.txt.split('\t');
+        for(let i=0;i<parts.length;i++){
+          if(i>0) segs.push({text:'\t', st:tr.st});
+          if(parts[i]!=='') segs.push({text:parts[i], st:tr.st});
+        }
+      }
+      // Assign each text segment a position: before first tab -> left; after tab i -> tab stop i.
+      // Build flex items: width = distance between consecutive tab stops (in px), last segment flex.
+      const contentW=pageWPx - ml - mr;
+      const stops=pp.tabs||[];
+      // If tabs are used but no explicit stops defined, default to a right tab
+      // at the content edge so "left text <tab> right text" places the right
+      // part at the right margin (Word-like).
+      let stopPx=stops.map(s=>({pos: twipToPx(s.pos), val:s.val}));
+      if(stopPx.length===0){
+        stopPx=[{pos: contentW, val:'right'}];
+      }
+      let tabIdx=0;
+      const items=[];
+      let curLeft=0;
+      for(const seg of segs){
+        if(seg.text==='\t'){
+          // open a new flex item positioned at this tab stop
+          const sp = stopPx[Math.min(tabIdx, stopPx.length-1)];
+          const widthPx = Math.max(0, sp.pos - curLeft);
+          items.push({width: widthPx, align: sp.val==='center'?'center':(sp.val==='right'?'right':'left'), flush:false});
+          curLeft = sp.pos;
+          tabIdx++;
+        } else {
+          // append text to the last item (or create a leading item)
+          const esc=seg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          const sp2=seg.st;
+          const spParts=[];
+          if(sp2.bold) spParts.push('font-weight:700');
+          if(sp2.italic) spParts.push('font-style:italic');
+          if(sp2.size) spParts.push(`font-size:${sp2.size}pt`);
+          const sa=spParts.length?` style="${spParts.join(';')}"`:'';
+          if(items.length===0){
+            // leading text before any tab: flex item that grows
+            items.push({width:null, align:'left', html:`<span${sa}>${esc}</span>`, flex:true});
+          } else {
+            const it=items[items.length-1];
+            it.html=(it.html||'')+`<span${sa}>${esc}</span>`;
+          }
+        }
+      }
+      // last item grows to fill remaining width
+      if(items.length) items[items.length-1].flex=true;
+      // render flex row
+      let row='<div style="display:flex;width:100%;white-space:nowrap;">';
+      for(const it of items){
+        const w = it.width!=null ? `width:${it.width}px;` : (it.flex?`flex:1;`:'');
+        const ta = it.align==='center'?'text-align:center;':(it.align==='right'?'text-align:right;':'text-align:left;');
+        row += `<div style="${w}${ta}">${it.html||''}</div>`;
+      }
+      row+='</div>';
+      inner = (numPrefix?`<span style="font-weight:700">${numPrefix}</span> `:'') + row;
+    } else {
+      // plain (no tabs): render runs inline, with number prefix
+      for(const tr of textRuns){
+        const styleParts=[];
+        if(tr.st.bold) styleParts.push('font-weight:700');
+        if(tr.st.italic) styleParts.push('font-style:italic');
+        if(tr.st.size) styleParts.push(`font-size:${tr.st.size}pt`);
+        const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
+        const esc = tr.txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        inner += `<span${styleAttr}>${esc}</span>`;
+      }
+      if(numPrefix) inner = `<span style="font-weight:700">${numPrefix}</span> ` + inner;
+    }
+    if(!inner.replace(/<[^>]+>/g,'').trim()) return '';
     // paragraph style
-    const pStyleParts=[`text-align:${pp.align}`];
+    const align = pp.align || 'left';
+    const pStyleParts=[`text-align:${align}`];
     if(pp.spacingBefore) pStyleParts.push(`margin-top:${twipToPx(pp.spacingBefore)}px`);
     if(pp.spacingAfter) pStyleParts.push(`margin-bottom:${twipToPx(pp.spacingAfter)}px`);
     if(pp.line){
@@ -333,7 +584,7 @@ async function docxToHtml(arrayBuffer){
     }
     if(pp.indLeft) pStyleParts.push(`padding-left:${twipToPx(pp.indLeft)}px`);
     if(pp.indFirstLine) pStyleParts.push(`text-indent:${twipToPx(pp.indFirstLine)}px`);
-    return `<p style="${pStyleParts.join(';')};white-space:pre-wrap;margin:0">${inner}</p>`;
+    return `<p style="${pStyleParts.join(';')};margin:0">${inner}</p>`;
   }
 
   // --- iterate body paragraphs ---
