@@ -204,6 +204,124 @@ async function docxToHtml(arrayBuffer){
   const res=await mammoth.convertToHtml({arrayBuffer});
   return res.value;
 }
+// --- PT Sans (Cyrillic) font registration for jsPDF ---
+let pdfFontsReady=false;
+async function ensurePdfFonts(){
+  if(pdfFontsReady) return;
+  const { jsPDF } = window.jspdf;
+  const fam = window.__pdfFonts && window.__pdfFonts.PTSans;
+  if(!fam){ throw new Error('Кириллический шрифт не найден'); }
+  const defs={
+    normal: fam.normal, bold: fam.bold, italic: fam.italic, bolditalic: fam.bolditalic
+  };
+  const vfsNames={};
+  for(const style of Object.keys(defs)){
+    const vfsName = 'PTSans-'+style+'.ttf';
+    vfsNames[style]=vfsName;
+    jsPDF.addFileToVFS(vfsName, defs[style]);
+  }
+  jsPDF.addFont('PTSans-normal.ttf','PTSans','normal');
+  jsPDF.addFont('PTSans-bold.ttf','PTSans','bold');
+  jsPDF.addFont('PTSans-italic.ttf','PTSans','italic');
+  jsPDF.addFont('PTSans-bolditalic.ttf','PTSans','bolditalic');
+  pdfFontsReady=true;
+}
+
+// Parse Mammoth HTML into a list of blocks: {text, bold, italic} runs separated by paragraph breaks.
+function htmlToBlocks(html){
+  const div=document.createElement('div'); div.innerHTML=html;
+  const blocks=[];
+  function walk(node){
+    node.childNodes.forEach(ch=>{
+      if(ch.nodeType===3){ // text node
+        const t=ch.textContent;
+        if(t && t.trim()!==''){
+          blocks.push({text:t, bold:false, italic:false});
+        }
+      } else if(ch.nodeType===1){ // element
+        const tag=ch.tagName.toLowerCase();
+        let bold=false, italic=false;
+        if(tag==='b'||tag==='strong') bold=true;
+        if(tag==='i'||tag==='em') italic=true;
+        if(ch.childNodes.length===0){
+          const t=(ch.textContent||'').trim();
+          if(t) blocks.push({text:t, bold, italic});
+        } else {
+          walkWithStyle(ch, bold, italic);
+        }
+        if(tag==='p'||tag==='div'||tag==='h1'||tag==='h2'||tag==='h3'||tag==='li'){
+          blocks.push({paragraph:true});
+        }
+      }
+    });
+  }
+  function walkWithStyle(node, bold, italic){
+    node.childNodes.forEach(ch=>{
+      if(ch.nodeType===3){
+        const t=ch.textContent;
+        if(t && t.trim()!==''){ blocks.push({text:t, bold, italic}); }
+      } else if(ch.nodeType===1){
+        const tag=ch.tagName.toLowerCase();
+        let b=bold, i=italic;
+        if(tag==='b'||tag==='strong') b=true;
+        if(tag==='i'||tag==='em') i=true;
+        if(ch.childNodes.length===0){
+          const t=(ch.textContent||'').trim();
+          if(t) blocks.push({text:t, bold:b, italic:i});
+        } else {
+          walkWithStyle(ch,b,i);
+        }
+        if(tag==='p'||tag==='div'||tag==='h1'||tag==='h2'||tag==='h3'||tag==='li'){
+          blocks.push({paragraph:true});
+        }
+      }
+    });
+  }
+  walk(div);
+  return blocks;
+}
+
+// Render DOCX content to a real-text PDF using embedded Cyrillic font
+async function docxToPdf(html){
+  await ensurePdfFonts();
+  const { jsPDF } = window.jspdf;
+  const doc=new jsPDF({unit:'pt', format:'a4'});
+  const pageW=doc.internal.pageSize.getWidth();
+  const margin=46; // ~1.6cm
+  const usableW=pageW-2*margin;
+  const fontSize=11;
+  doc.setFont('PTSans','normal'); doc.setFontSize(fontSize);
+
+  const blocks=htmlToBlocks(html);
+  let x=margin, y=margin+fontSize;
+  let lineH=fontSize*1.5;
+
+  function newLine(gap){
+    if(y+gap>doc.internal.pageSize.getHeight()-margin){
+      doc.addPage(); y=margin+fontSize;
+    } else {
+      y+=gap;
+    }
+  }
+
+  for(const b of blocks){
+    if(b.paragraph){ newLine(lineH); continue; }
+    const style = (b.bold?'bold':'')+(b.italic?'italic':'');
+    const text=b.text.replace(/\s+/g,' ').trim();
+    if(!text) continue;
+    doc.setFont('PTSans', style||'normal');
+    const lines=doc.splitTextToSize(text, usableW);
+    for(const line of lines){
+      if(y>doc.internal.pageSize.getHeight()-margin){
+        doc.addPage(); y=margin+fontSize;
+        doc.setFont('PTSans', style||'normal');
+      }
+      doc.text(line, x, y);
+      y+=lineH;
+    }
+  }
+  return doc.output('blob');
+}
 async function docxToText(arrayBuffer){
   const res=await mammoth.extractRawText({arrayBuffer});
   return res.value;
@@ -265,7 +383,7 @@ convertBtn.onclick = async ()=>{
     }
     // DOCX source
     else if(from==='docx'||from==='doc'){
-      if(to==='pdf'){ const html=await docxToHtml(buf); outBlob=await htmlToPdf(html); outName=`${base}.pdf`; }
+      if(to==='pdf'){ const html=await docxToHtml(buf); outBlob=await docxToPdf(html); outName=`${base}.pdf`; }
       else if(to==='txt'){ const t=await docxToText(buf); outBlob=new Blob([t],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
       else if(to==='html'){ const html=await docxToHtml(buf); outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
       else if(to==='jpg'||to==='png'){ const html=await docxToHtml(buf); const box=$('hiddenRender'); box.innerHTML=html; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
