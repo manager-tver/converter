@@ -621,14 +621,28 @@ async function docxToHtml(arrayBuffer){
       }
       if(numPrefix) inner = `<span>${numPrefix}</span> ` + inner;
     }
-    if(!inner.replace(/<[^>]+>/g,'').trim()) return '';
+    const hasText = inner.replace(/<[^>]+>/g,'').trim().length>0;
     // paragraph style
     const align = pp.align || 'left';
-    // Effective paragraph font-size: first non-empty run size, else style/default.
-    // Setting it on the <p> ensures unitless line-height multiplies the actual
-    // text size (8pt) rather than the inherited body size (11pt) -> no overflow.
-    const effSize = (textRuns.find(t=>t.st.size)||{st:{}}).st.size || (styleObj&&styleObj.sz) || stylesMap.defaultR.sz || 11;
-    const effFont = (textRuns.find(t=>t.st.font)||{st:{}}).st.font || (styleObj&&styleObj.font) || stylesMap.defaultR.font;
+    // Effective paragraph font-size: first non-empty run size, else paragraph-
+    // mark rPr (pPr/rPr), else style/default. Setting it on the <p> ensures
+    // unitless line-height multiplies the actual text size (8pt) rather than
+    // the inherited body size (11pt) -> no overflow.
+    const pmarkRPr = pPrEl ? firstNS(pPrEl,'rPr') : null;
+    let pmarkSz=null, pmarkFont=null;
+    if(pmarkRPr){
+      const psz=firstNS(pmarkRPr,'sz'); if(psz) pmarkSz=parseInt(attrNS(psz,'val'),10)/2;
+      const prf=firstNS(pmarkRPr,'rFonts'); if(prf) pmarkFont=(attrNS(prf,'ascii')||attrNS(prf,'hAnsi')||null);
+    }
+    const effSize = (textRuns.find(t=>t.st.size)||{st:{}}).st.size || pmarkSz || (styleObj&&styleObj.sz) || stylesMap.defaultR.sz || 11;
+    const effFont = (textRuns.find(t=>t.st.font)||{st:{}}).st.font || pmarkFont || (styleObj&&styleObj.font) || stylesMap.defaultR.font;
+    // Empty paragraph: keep it as a spacer so Word's inter-row gaps survive
+    // (signature blocks, blank lines between paragraphs). It keeps its own
+    // line-height so the gap matches the source.
+    if(!hasText){
+      const lh = pp.line ? ((pp.lineRule==='exact'||pp.lineRule==='atLeast')? `line-height:${twipToPx(pp.line)}px` : `line-height:${Math.round((pp.line/240)*1.2*100)/100}`) : 'line-height:1.2';
+      return `<p style="text-align:${align};font-size:${effSize}pt;font-family:'${mapFont(effFont)}',Arial,sans-serif;${lh};margin:0">&nbsp;</p>`;
+    }
     pStyleParts=[`text-align:${align}`, `font-size:${effSize}pt`, `font-family:'${mapFont(effFont)}',Arial,sans-serif`];
     if(pp.spacingBefore) pStyleParts.push(`margin-top:${twipToPx(pp.spacingBefore)}px`);
     if(pp.spacingAfter) pStyleParts.push(`margin-bottom:${twipToPx(pp.spacingAfter)}px`);
@@ -740,7 +754,7 @@ async function docxToHtml(arrayBuffer){
   const escFoot = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   let footnotesHtml='';
   if(footnotes && Object.keys(footnotes).length){
-    footnotesHtml = `<div style="margin-top:18px;border-top:0.5pt solid #999;padding-top:6px;">`;
+    footnotesHtml = `<div style="margin-top:6px;border-top:0.5pt solid #999;padding-top:6px;">`;
     const sortedIds=Object.keys(footnotes).map(Number).sort((a,b)=>a-b);
     for(const id of sortedIds){
       footnotesHtml += `<p style="font-family:'Carlito',Arial,sans-serif;font-size:8pt;line-height:1.2;margin:0 0 4px 0;"><span style="font-weight:700">[${id}]</span> ${escFoot(footnotes[id])}</p>`;
@@ -753,9 +767,11 @@ async function docxToHtml(arrayBuffer){
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     html,body{margin:0;padding:0;}
     body{font-family:'PT Sans',Arial,Helvetica,sans-serif;font-size:${fontSize}pt;color:#000;background:#fff;}
-    .docpage{width:${pageWPx}px;min-height:${pageHPx}px;box-sizing:border-box;padding:${mt}px ${mr}px ${mb}px ${ml}px;overflow:hidden;}
+    .docpage{width:${pageWPx}px;min-height:${pageHPx}px;box-sizing:border-box;padding:${mt}px ${mr}px ${mb}px ${ml}px;overflow:hidden;display:flex;flex-direction:column;}
+    .docpage>.docbody{flex:0 1 auto;}
+    .docpage>.docfoot{flex:0 0 auto;margin-top:auto;}
     p{margin:0;}
-  </style></head><body><div class="docpage">${htmlBody}${footnotesHtml}</div></body></html>`;
+  </style></head><body><div class="docpage"><div class="docbody">${htmlBody}</div>${footnotesHtml?`<div class="docfoot">${footnotesHtml}</div>`:''}</div></body></html>`;
 }
 // Convert DOCX to image(s) via html2canvas rendering, preserving exact A4
 // proportions and Word-like layout. Returns an array of image blobs (one per page).
