@@ -58,6 +58,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--i
 .upload-hint{font-size:12px!important;line-height:1.6}
 .file-info{margin-top:16px;text-align:left;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
 .file-row{display:flex;align-items:center;gap:10px}
+.file-list{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.file-list-item{display:flex;align-items:center;gap:10px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.file-list-item .file-ico{font-size:20px}
+.file-list-item .file-meta strong{font-size:13px}
 .file-ico{font-size:28px}
 .file-meta{flex:1;min-width:0}
 .file-meta strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
