@@ -863,9 +863,11 @@ async function docxToHtml(arrayBuffer){
     }
     if(pp.indLeft) pStyleParts.push(`padding-left:${twipToPx(pp.indLeft)}px`);
     if(pp.indFirstLine) pStyleParts.push(`text-indent:${twipToPx(pp.indFirstLine)}px`);
-    // Anchored drawings (header logo / text box) are position:absolute and take
-    // no flow height; reserve their height so body content does not overlap them.
-    if(maxDrawingH>0) pStyleParts.push(`min-height:${maxDrawingH}px`);
+    // Anchored drawings (header logo / text box) are position:absolute and float
+    // OVER the body text, exactly as in Word (allowOverlap, transparent): they
+    // must NOT reserve flow height, otherwise the whole body (and signatures)
+    // shifts down and the document spills onto a second page. maxDrawingH is
+    // kept only for the drawingsHtml merge above.
     return `<p style="${pStyleParts.join(';')};margin:0">${inner}</p>`;
   }
 
@@ -1036,6 +1038,26 @@ async function renderHtmlToPageCanvases(html){
     canvases.push(slice);
     y+=pageHPx;
   }
+  // Trim trailing blank slices: html2canvas can render a canvas a few px taller
+  // than a whole number of pages (rounding / min-height), producing a near-empty
+  // final slice. Drop any trailing slice that is entirely white so a document that
+  // fits on one page never gains a phantom second (blank) page.
+  try{
+    const sctx=canvas.getContext('2d');
+    while(canvases.length>1){
+      const yStart=(canvases.length-1)*pageHPx;
+      const regionH=Math.min(pageHPx, canvas.height-yStart);
+      if(regionH<=0){ canvases.pop(); continue; }
+      // Sample the region for any non-white pixel (strided for speed).
+      const data=sctx.getImageData(0, Math.floor(yStart), cw, Math.floor(regionH)).data;
+      let blank=true;
+      const stride=4*7; // sample every 7th pixel
+      for(let i=0;i<data.length;i+=stride){
+        if(data[i]<250||data[i+1]<250||data[i+2]<250){ blank=false; break; }
+      }
+      if(blank) canvases.pop(); else break;
+    }
+  }catch(e){ /* getImageData unavailable (e.g. tainted canvas) - keep all slices */ }
   return canvases;
 }
 async function docxToText(arrayBuffer){
