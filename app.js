@@ -24,6 +24,7 @@ function injectEmbeddedFonts(){
 injectEmbeddedFonts();
 
 let currentFile = null;
+let currentFiles = []; // all selected files (batch mode may hold several)
 let fromFmt = 'auto';
 let toFmt = 'jpg';
 let mode = 'single';
@@ -31,6 +32,7 @@ let history = [];
 
 const $ = id => document.getElementById(id);
 const dropZone = $('dropZone'), fileInput = $('fileInput'), browseBtn = $('browseBtn');
+const fileListEl = $('fileList'), singleFileRow = $('singleFileRow');
 const fileInfo = $('fileInfo'), fileName = $('fileName'), fileSize = $('fileSize'), fileIco = $('fileIco');
 const convertBtn = $('convertBtn'), resultBox = $('resultBox'), downloadBtn = $('downloadBtn');
 const resultFile = $('resultFile'), resultPreview = $('resultPreview'), errorBox = $('errorBox');
@@ -58,29 +60,57 @@ function detectFmt(file){
 // --- UI wiring ---
 browseBtn.onclick = e=>{ e.stopPropagation(); fileInput.click(); };
 dropZone.onclick = ()=> fileInput.click();
-fileInput.onchange = ()=>{ if(fileInput.files[0]) setFile(fileInput.files[0]); };
+fileInput.onchange = ()=>{ if(fileInput.files && fileInput.files.length){ for(const f of fileInput.files) addFile(f); fileInput.value=''; } };
 ['dragover','dragenter'].forEach(ev=>dropZone.addEventListener(ev,e=>{e.preventDefault();dropZone.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>dropZone.addEventListener(ev,e=>{e.preventDefault();dropZone.classList.remove('drag');}));
-dropZone.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) setFile(f); });
+dropZone.addEventListener('drop',e=>{ e.preventDefault(); const fs=e.dataTransfer.files; if(fs && fs.length){ for(const f of fs) addFile(f); } });
 $('clearFile').onclick = e=>{ e.stopPropagation(); clearFile(); };
 $('quality').oninput = e=> $('qVal').textContent=e.target.value+'%';
 
-function setFile(file){
-  currentFile=file; hideError(); resultBox.hidden=true;
-  fileInfo.hidden=false; fileName.textContent=file.name; fileSize.textContent=fmtSize(file.size)+' • '+detectFmt(file).toUpperCase();
-  fileIco.textContent=iconFor(extOf(file.name));
-  progressWrap.hidden=true;
-  convertBtn.disabled=false;
-  // auto-suggest target
-  const d=detectFmt(file);
-  if(d==='pdf') selectTo('jpg');
-  else if(d==='docx') selectTo('pdf');
-  else if(d==='jpg'||d==='png'||d==='webp') selectTo('pdf');
-  else if(d==='xlsx'||d==='csv') selectTo('pdf');
-  else if(d==='txt') selectTo('pdf');
-  toast('Файл выбран: '+file.name);
+function renderFileList(){
+  const n=currentFiles.length;
+  fileInfo.hidden=false;
+  if(n===1){
+    singleFileRow.hidden=false; fileListEl.hidden=true;
+    currentFile=currentFiles[0];
+    fileName.textContent=currentFile.name;
+    fileSize.textContent=fmtSize(currentFile.size)+' • '+detectFmt(currentFile).toUpperCase();
+    fileIco.textContent=iconFor(extOf(currentFile.name));
+  } else {
+    singleFileRow.hidden=true; fileListEl.hidden=false;
+    fileListEl.innerHTML=currentFiles.map((f,i)=>`<div class="file-list-item">
+      <span class="file-ico">${iconFor(extOf(f.name))}</span>
+      <div class="file-meta"><strong>${esc(f.name)}</strong><span>${fmtSize(f.size)} • ${detectFmt(f).toUpperCase()}</span></div>
+      <button class="icon-btn" data-rm="${i}" title="Убрать">✕</button>
+    </div>`).join('');
+    Array.from(fileListEl.querySelectorAll('[data-rm]')).forEach(b=>{
+      b.onclick=()=>{ currentFiles.splice(parseInt(b.dataset.rm,10),1); currentFile=currentFiles[0]||null; renderFileList(); if(!currentFiles.length) clearFile(); };
+    });
+    currentFile=currentFiles[0]||null;
+  }
+  convertBtn.disabled=!currentFiles.length;
 }
-function clearFile(){ currentFile=null; fileInfo.hidden=true; convertBtn.disabled=true; fileInput.value=''; resultBox.hidden=true; }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function addFile(file){
+  hideError(); resultBox.hidden=true;
+  // auto-suggest target only when no files yet
+  if(currentFiles.length===0){
+    const d=detectFmt(file);
+    if(d==='pdf') selectTo('jpg');
+    else if(d==='docx') selectTo('pdf');
+    else if(d==='jpg'||d==='png'||d==='webp') selectTo('pdf');
+    else if(d==='xlsx'||d==='csv') selectTo('pdf');
+    else if(d==='txt') selectTo('pdf');
+  }
+  // avoid duplicating same name+size already present
+  if(!currentFiles.some(f=>f.name===file.name && f.size===file.size)){
+    currentFiles.push(file);
+  }
+  renderFileList();
+  progressWrap.hidden=true;
+  toast('Добавлен: '+file.name);
+}
+function clearFile(){ currentFiles=[]; currentFile=null; fileInfo.hidden=true; convertBtn.disabled=true; fileInput.value=''; resultBox.hidden=true; }
 
 function bindSelect(id, cb){
   const el=$(id);
@@ -104,6 +134,7 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   t.classList.add('active'); mode=t.dataset.mode;
   fileInput.multiple = (mode==='batch');
+  $('convertLabel').textContent = (mode==='batch') ? 'Конвертировать все' : 'Конвертировать';
   toast(mode==='batch'?'Пакетный режим: можно выбрать несколько файлов':'Одиночный режим');
 });
 document.querySelectorAll('[data-quick]').forEach(b=>b.onclick=()=>{
@@ -858,113 +889,40 @@ async function rtfToText(text){
 
 // --- main convert ---
 convertBtn.onclick = async ()=>{
-  if(!currentFile) return;
+  if(!currentFiles.length) return;
   hideError(); resultBox.hidden=true; convertBtn.disabled=true;
-  const from = detectFmt(currentFile);
   const to = toFmt;
-  const base = baseOf(currentFile.name);
-  setProgress(5,'Подготовка…');
+  const total = currentFiles.length;
+  let done = 0, okCount = 0, failCount = 0;
+  const results = [];
   try{
-    const buf = await fileToArrayBuffer(currentFile);
-    let outBlob=null, outName='', outMime='application/octet-stream';
-
-    // PDF source
-    if(from==='pdf'){
-      if(to==='jpg'||to==='png'||to==='webp'){
-        const blobs=await pdfToImages(buf,to);
-        if(blobs.length===1){ outBlob=blobs[0]; outName=`${base}.${to}`; }
-        else{
-          // zip multiple pages
-          const zip=new JSZip();
-          blobs.forEach((b,i)=>zip.file(`page-${i+1}.${to}`,b));
-          outBlob=await zip.generateAsync({type:'blob'}); outName=`${base}-pages.zip`;
-        }
-      } else if(to==='txt'){ const t=await pdfToText(buf); outBlob=new Blob([t],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else if(to==='docx'){ const t=await pdfToText(buf); outBlob=await textToDocx(t); outName=`${base}.docx`; }
-      else if(to==='html'){ const t=await pdfToText(buf); outBlob=new Blob([`<html><body><pre>${t.replace(/</g,'&lt;')}</pre></body></html>`],{type:'text/html'}); outName=`${base}.html`; }
-      else if(to==='pdf'){ outBlob=new Blob([buf],{type:'application/pdf'}); outName=`${base}.pdf`; }
-      else throw new Error(`Конвертация PDF → ${to.toUpperCase()} не поддерживается`);
+    for(let i=0;i<currentFiles.length;i++){
+      const file = currentFiles[i];
+      const from = detectFmt(file);
+      const base = baseOf(file.name);
+      setProgress(Math.round(5 + (i/total)*90), `Файл ${i+1} из ${total}: ${file.name}…`);
+      try{
+        const out = await convertOneFile(file, from, to, base);
+        downloadBlob(out.outBlob, out.outName);
+        addHistory(file.name, from, to, out.outBlob.size);
+        results.push(out);
+        okCount++;
+      }catch(err){
+        console.error(err);
+        failCount++;
+        toast(`❌ ${file.name}: ${err.message||'ошибка'}`);
+      }
+      done++;
     }
-    // Image source
-    else if(['jpg','png','webp'].includes(from)){
-      if(to==='pdf'){ outBlob=await imageToPdf(currentFile); outName=`${base}.pdf`; }
-      else if(['jpg','png','webp'].includes(to)){ outBlob=await imageToImage(currentFile,to); outName=`${base}.${to}`; }
-      else throw new Error(`Конвертация ${from.toUpperCase()} → ${to.toUpperCase()} не поддерживается`);
-    }
-    // DOCX source
-    else if(from==='docx'||from==='doc'){
-      if(to==='pdf'){ const html=await docxToHtml(buf); outBlob=await docxToPdf(html); outName=`${base}.pdf`; }
-      else if(to==='txt'){ const t=await docxToText(buf); outBlob=new Blob([t],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else if(to==='html'){ const html=await docxToHtml(buf); outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
-      else if(to==='jpg'||to==='png'){ const html=await docxToHtml(buf); const blobs=await docxToImages(html,to); if(blobs.length===1){ outBlob=blobs[0]; outName=`${base}.${to}`; } else { const zip=new JSZip(); blobs.forEach((b,i)=>zip.file(`page-${i+1}.${to}`,b)); outBlob=await zip.generateAsync({type:'blob'}); outName=`${base}-pages.zip`; } }
-      else throw new Error(`Конвертация DOCX → ${to.toUpperCase()} не поддерживается`);
-    }
-    // XLSX / CSV source
-    else if(from==='xlsx'||from==='xls'||from==='csv'){
-      const wb=await xlsxRead(buf);
-      if(to==='pdf'){
-        const ws=wb.Sheets[wb.SheetNames[0]];
-        const html=XLSX.utils.sheet_to_html(ws);
-        outBlob=await htmlToPdf(html); outName=`${base}.pdf`;
-      } else if(to==='csv'){ const ws=wb.Sheets[wb.SheetNames[0]]; const csv=XLSX.utils.sheet_to_csv(ws); outBlob=new Blob([csv],{type:'text/csv;charset=utf-8'}); outName=`${base}.csv`; }
-      else if(to==='json'){ const ws=wb.Sheets[wb.SheetNames[0]]; const json=XLSX.utils.sheet_to_json(ws,{header:1}); outBlob=new Blob([JSON.stringify(json,null,2)],{type:'application/json'}); outName=`${base}.json`; }
-      else if(to==='xlsx'){ XLSX.writeFile(wb, `${base}.xlsx`); outBlob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}); outName=`${base}.xlsx`; }
-      else if(to==='html'){ const ws=wb.Sheets[wb.SheetNames[0]]; const html=XLSX.utils.sheet_to_html(ws); outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
-      else if(to==='txt'){ const ws=wb.Sheets[wb.SheetNames[0]]; const csv=XLSX.utils.sheet_to_csv(ws); outBlob=new Blob([csv],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else if(to==='jpg'||to==='png'){ const ws=wb.Sheets[wb.SheetNames[0]]; const html=XLSX.utils.sheet_to_html(ws); const box=$('hiddenRender'); box.innerHTML=html; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
-      else throw new Error(`Конвертация таблицы → ${to.toUpperCase()} не поддерживается`);
-    }
-    // TXT source
-    else if(from==='txt'||from==='md'||from==='rtf'){
-      let text=await fileToText(currentFile);
-      if(from==='rtf') text=await rtfToText(text);
-      if(to==='pdf'){ outBlob=await textToPdf(text); outName=`${base}.pdf`; }
-      else if(to==='docx'){ outBlob=await textToDocx(text); outName=`${base}.docx`; }
-      else if(to==='html'){ const html = from==='md' ? marked.parse(text) : `<pre>${text.replace(/</g,'&lt;')}</pre>`; outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
-      else if(to==='txt'){ outBlob=new Blob([text],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else if(to==='jpg'||to==='png'){ const box=$('hiddenRender'); box.innerHTML=`<pre style="white-space:pre-wrap;font-family:Arial">${text.replace(/</g,'&lt;')}</pre>`; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
-      else throw new Error(`Конвертация текста → ${to.toUpperCase()} не поддерживается`);
-    }
-    // HTML source
-    else if(from==='html'||from==='htm'){
-      const html=await fileToText(currentFile);
-      if(to==='pdf'){ outBlob=await htmlToPdf(html); outName=`${base}.pdf`; }
-      else if(to==='txt'){ const div=document.createElement('div'); div.innerHTML=html; outBlob=new Blob([div.innerText],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else if(to==='docx'){ const div=document.createElement('div'); div.innerHTML=html; outBlob=await textToDocx(div.innerText); outName=`${base}.docx`; }
-      else if(to==='jpg'||to==='png'){ const box=$('hiddenRender'); box.innerHTML=html; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
-      else throw new Error(`Конвертация HTML → ${to.toUpperCase()} не поддерживается`);
-    }
-    // PPTX source
-    else if(from==='pptx'||from==='ppt'){
-      const t=await pptxToText(buf);
-      if(to==='txt'){ outBlob=new Blob([t],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else if(to==='pdf'){ outBlob=await textToPdf(t); outName=`${base}.pdf`; }
-      else if(to==='docx'){ outBlob=await textToDocx(t); outName=`${base}.docx`; }
-      else if(to==='jpg'||to==='png'){ const box=$('hiddenRender'); box.innerHTML=`<pre style="white-space:pre-wrap;font-family:Arial">${t.replace(/</g,'&lt;')}</pre>`; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
-      else throw new Error(`Конвертация PPTX → ${to.toUpperCase()} не поддерживается`);
-    }
-    else if(from==='json'){
-      const text=await fileToText(currentFile);
-      if(to==='pdf'){ outBlob=await textToPdf(text); outName=`${base}.pdf`; }
-      else if(to==='txt'){ outBlob=new Blob([text],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
-      else throw new Error(`Конвертация JSON → ${to.toUpperCase()} не поддерживается`);
-    }
-    else {
-      throw new Error(`Формат .${from} пока не поддерживается. Попробуйте PDF, DOCX, XLSX, JPG, PNG, TXT, HTML, CSV, PPTX.`);
-    }
-
-    setProgress(100,'Готово!');
+    // result summary
+    setProgress(100, done===total ? 'Готово!' : 'Завершено с ошибками');
     resultBox.hidden=false;
-    resultFile.textContent=`${outName} • ${fmtSize(outBlob.size)}`;
-    downloadBlob(outBlob, outName);
-    addHistory(currentFile.name, from, to, outBlob.size);
-    // preview for images
+    resultFile.textContent = (okCount>0 ? `${okCount} файл(ов) конвертировано` : 'Не удалось конвертировать') + (failCount>0 ? `, ${failCount} пропущено` : '');
+    // preview: show last successful image result if any
     resultPreview.innerHTML='';
-    if(outBlob.type.startsWith('image/')){
-      const url=URL.createObjectURL(outBlob);
-      resultPreview.innerHTML=`<img src="${url}" alt="preview">`;
-    }
-    toast('✅ Конвертация завершена!');
+    const lastImg = [...results].reverse().find(r=>r.outBlob.type.startsWith('image/'));
+    if(lastImg){ const url=URL.createObjectURL(lastImg.outBlob); resultPreview.innerHTML=`<img src="${url}" alt="preview">`; }
+    toast(`✅ Конвертация завершена: ${okCount} из ${total}`);
   }catch(err){
     console.error(err);
     showError(err.message||'Ошибка конвертации. Попробуйте другой файл.');
@@ -973,3 +931,88 @@ convertBtn.onclick = async ()=>{
     convertBtn.disabled=false;
   }
 };
+
+// Convert a single file; returns {outBlob, outName}. Throws on unsupported/errors.
+async function convertOneFile(file, from, to, base){
+  let outBlob=null, outName='';
+  const buf = await fileToArrayBuffer(file);
+
+  // PDF source
+  if(from==='pdf'){
+    if(to==='jpg'||to==='png'||to==='webp'){
+      const blobs=await pdfToImages(buf,to);
+      if(blobs.length===1){ outBlob=blobs[0]; outName=`${base}.${to}`; }
+      else{ const zip=new JSZip(); blobs.forEach((b,i)=>zip.file(`page-${i+1}.${to}`,b)); outBlob=await zip.generateAsync({type:'blob'}); outName=`${base}-pages.zip`; }
+    } else if(to==='txt'){ const t=await pdfToText(buf); outBlob=new Blob([t],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else if(to==='docx'){ const t=await pdfToText(buf); outBlob=await textToDocx(t); outName=`${base}.docx`; }
+    else if(to==='html'){ const t=await pdfToText(buf); outBlob=new Blob([`<html><body><pre>${t.replace(/</g,'&lt;')}</pre></body></html>`],{type:'text/html'}); outName=`${base}.html`; }
+    else if(to==='pdf'){ outBlob=new Blob([buf],{type:'application/pdf'}); outName=`${base}.pdf`; }
+    else throw new Error(`Конвертация PDF → ${to.toUpperCase()} не поддерживается`);
+  }
+  // Image source
+  else if(['jpg','png','webp'].includes(from)){
+    if(to==='pdf'){ outBlob=await imageToPdf(file); outName=`${base}.pdf`; }
+    else if(['jpg','png','webp'].includes(to)){ outBlob=await imageToImage(file,to); outName=`${base}.${to}`; }
+    else throw new Error(`Конвертация ${from.toUpperCase()} → ${to.toUpperCase()} не поддерживается`);
+  }
+  // DOCX source
+  else if(from==='docx'||from==='doc'){
+    if(to==='pdf'){ const html=await docxToHtml(buf); outBlob=await docxToPdf(html); outName=`${base}.pdf`; }
+    else if(to==='txt'){ const t=await docxToText(buf); outBlob=new Blob([t],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else if(to==='html'){ const html=await docxToHtml(buf); outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
+    else if(to==='jpg'||to==='png'){ const html=await docxToHtml(buf); const blobs=await docxToImages(html,to); if(blobs.length===1){ outBlob=blobs[0]; outName=`${base}.${to}`; } else { const zip=new JSZip(); blobs.forEach((b,i)=>zip.file(`page-${i+1}.${to}`,b)); outBlob=await zip.generateAsync({type:'blob'}); outName=`${base}-pages.zip`; } }
+    else throw new Error(`Конвертация DOCX → ${to.toUpperCase()} не поддерживается`);
+  }
+  // XLSX / CSV source
+  else if(from==='xlsx'||from==='xls'||from==='csv'){
+    const wb=await xlsxRead(buf);
+    if(to==='pdf'){ const ws=wb.Sheets[wb.SheetNames[0]]; const html=XLSX.utils.sheet_to_html(ws); outBlob=await htmlToPdf(html); outName=`${base}.pdf`; }
+    else if(to==='csv'){ const ws=wb.Sheets[wb.SheetNames[0]]; const csv=XLSX.utils.sheet_to_csv(ws); outBlob=new Blob([csv],{type:'text/csv;charset:utf-8'}); outName=`${base}.csv`; }
+    else if(to==='json'){ const ws=wb.Sheets[wb.SheetNames[0]]; const json=XLSX.utils.sheet_to_json(ws,{header:1}); outBlob=new Blob([JSON.stringify(json,null,2)],{type:'application/json'}); outName=`${base}.json`; }
+    else if(to==='xlsx'){ XLSX.writeFile(wb, `${base}.xlsx`); outBlob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}); outName=`${base}.xlsx`; }
+    else if(to==='html'){ const ws=wb.Sheets[wb.SheetNames[0]]; const html=XLSX.utils.sheet_to_html(ws); outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
+    else if(to==='txt'){ const ws=wb.Sheets[wb.SheetNames[0]]; const csv=XLSX.utils.sheet_to_csv(ws); outBlob=new Blob([csv],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else if(to==='jpg'||to==='png'){ const ws=wb.Sheets[wb.SheetNames[0]]; const html=XLSX.utils.sheet_to_html(ws); const box=$('hiddenRender'); box.innerHTML=html; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
+    else throw new Error(`Конвертация таблицы → ${to.toUpperCase()} не поддерживается`);
+  }
+  // TXT source
+  else if(from==='txt'||from==='md'||from==='rtf'){
+    let text=await fileToText(file);
+    if(from==='rtf') text=await rtfToText(text);
+    if(to==='pdf'){ outBlob=await textToPdf(text); outName=`${base}.pdf`; }
+    else if(to==='docx'){ outBlob=await textToDocx(text); outName=`${base}.docx`; }
+    else if(to==='html'){ const html = from==='md' ? marked.parse(text) : `<pre>${text.replace(/</g,'&lt;')}</pre>`; outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
+    else if(to==='txt'){ outBlob=new Blob([text],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else if(to==='jpg'||to==='png'){ const box=$('hiddenRender'); box.innerHTML=`<pre style="white-space:pre-wrap;font-family:Arial">${text.replace(/</g,'&lt;')}</pre>`; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
+    else throw new Error(`Конвертация текста → ${to.toUpperCase()} не поддерживается`);
+  }
+  // HTML source
+  else if(from==='html'||from==='htm'){
+    const html=await fileToText(file);
+    if(to==='pdf'){ outBlob=await htmlToPdf(html); outName=`${base}.pdf`; }
+    else if(to==='txt'){ const div=document.createElement('div'); div.innerHTML=html; outBlob=new Blob([div.innerText],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else if(to==='docx'){ const div=document.createElement('div'); div.innerHTML=html; outBlob=await textToDocx(div.innerText); outName=`${base}.docx`; }
+    else if(to==='jpg'||to==='png'){ const box=$('hiddenRender'); box.innerHTML=html; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
+    else throw new Error(`Конвертация HTML → ${to.toUpperCase()} не поддерживается`);
+  }
+  // PPTX source
+  else if(from==='pptx'||from==='ppt'){
+    const t=await pptxToText(buf);
+    if(to==='txt'){ outBlob=new Blob([t],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else if(to==='pdf'){ outBlob=await textToPdf(t); outName=`${base}.pdf`; }
+    else if(to==='docx'){ outBlob=await textToDocx(t); outName=`${base}.docx`; }
+    else if(to==='jpg'||to==='png'){ const box=$('hiddenRender'); box.innerHTML=`<pre style="white-space:pre-wrap;font-family:Arial">${t.replace(/</g,'&lt;')}</pre>`; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
+    else throw new Error(`Конвертация PPTX → ${to.toUpperCase()} не поддерживается`);
+  }
+  else if(from==='json'){
+    const text=await fileToText(file);
+    if(to==='pdf'){ outBlob=await textToPdf(text); outName=`${base}.pdf`; }
+    else if(to==='txt'){ outBlob=new Blob([text],{type:'text/plain;charset:utf-8'}); outName=`${base}.txt`; }
+    else throw new Error(`Конвертация JSON → ${to.toUpperCase()} не поддерживается`);
+  }
+  else {
+    throw new Error(`Формат .${from} пока не поддерживается. Попробуйте PDF, DOCX, XLSX, JPG, PNG, TXT, HTML, CSV, PPTX.`);
+  }
+  if(!outBlob) throw new Error('Не удалось выполнить конвертацию');
+  return {outBlob, outName};
+}

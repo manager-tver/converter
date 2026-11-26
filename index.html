@@ -37,7 +37,7 @@
 <link rel="author" href="https://github.com/manager-tver">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=d52b9f8a">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
@@ -108,7 +108,7 @@
         <button class="btn btn-outline" id="browseBtn">Выбрать файл</button>
         <p class="upload-hint">PDF, DOCX, XLSX, JPG, PNG, TXT, HTML, MD, PPTX, CSV, RTF<br>до 100 МБ • обработка локально</p>
         <div class="file-info" id="fileInfo" hidden>
-          <div class="file-row">
+          <div class="file-row" id="singleFileRow">
             <span class="file-ico" id="fileIco">📄</span>
             <div class="file-meta">
               <strong id="fileName">—</strong>
@@ -116,6 +116,7 @@
             </div>
             <button class="icon-btn" id="clearFile" title="Убрать">✕</button>
           </div>
+          <div class="file-list" id="fileList" hidden></div>
           <div class="progress-wrap" id="progressWrap" hidden>
             <div class="progress-bar"><div id="progressFill"></div></div>
             <span id="progressText">Готово</span>
@@ -276,6 +277,6 @@
 <div class="toast" id="toast"></div>
 <div id="hiddenRender" style="position:absolute;left:-9999px;top:0;width:800px;background:#fff;padding:24px;font-family:Arial"></div>
 
-<script src="app.js?v=b8d4e2f7"></script>
+<script src="app.js?v=c94a7f1e"></script>
 </body>
 </html>
