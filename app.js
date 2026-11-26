@@ -270,6 +270,14 @@ function htmlToBlocks(html){
   return blocks;
 }
 
+// Convert DOCX to image(s) via PDF, preserving exact A4 proportions like Word.
+// Returns an array of image blobs (one per page).
+async function docxToImages(html, imgFmt){
+  const pdfBlob=await docxToPdf(html);
+  const buf=await pdfBlob.arrayBuffer();
+  return pdfToImages(buf, imgFmt);
+}
+
 // Render DOCX content to a real-text PDF using embedded Cyrillic font
 async function docxToPdf(html){
   const { jsPDF } = window.jspdf;
@@ -376,7 +384,7 @@ convertBtn.onclick = async ()=>{
       if(to==='pdf'){ const html=await docxToHtml(buf); outBlob=await docxToPdf(html); outName=`${base}.pdf`; }
       else if(to==='txt'){ const t=await docxToText(buf); outBlob=new Blob([t],{type:'text/plain;charset=utf-8'}); outName=`${base}.txt`; }
       else if(to==='html'){ const html=await docxToHtml(buf); outBlob=new Blob([html],{type:'text/html'}); outName=`${base}.html`; }
-      else if(to==='jpg'||to==='png'){ const html=await docxToHtml(buf); const box=$('hiddenRender'); box.innerHTML=html; const c=await html2canvas(box,{scale:2}); outBlob=await canvasToBlob(c, to==='png'?'image/png':'image/jpeg', .92); outName=`${base}.${to}`; }
+      else if(to==='jpg'||to==='png'){ const html=await docxToHtml(buf); const blobs=await docxToImages(html,to); if(blobs.length===1){ outBlob=blobs[0]; outName=`${base}.${to}`; } else { const zip=new JSZip(); blobs.forEach((b,i)=>zip.file(`page-${i+1}.${to}`,b)); outBlob=await zip.generateAsync({type:'blob'}); outName=`${base}-pages.zip`; } }
       else throw new Error(`Конвертация DOCX → ${to.toUpperCase()} не поддерживается`);
     }
     // XLSX / CSV source
