@@ -486,10 +486,34 @@ async function docxToHtml(arrayBuffer){
       // text box content (wps:wsp > wps:txbx > w:txbxContent)
       const txbx=firstNSn(drEl,NS,'txbxContent');
       if(txbx){
-        let innerTx='';
+        const paras=[];
         for(const p of Array.from(txbx.childNodes)){
           if(p.nodeType===1 && p.localName==='p' && p.namespaceURI===NS){
-            innerTx += buildParagraph(p);
+            const html=buildParagraph(p);
+            const txt=byNS(p,'t').map(t=>t.textContent).join('');
+            // effective font size (pt): first run w:sz, else pPr/rPr sz, else 11
+            let sz=11;
+            const fr=firstNS(p,'r');
+            if(fr){ const rPr=firstNS(fr,'rPr'); if(rPr){ const s=firstNS(rPr,'sz'); if(s){ sz=parseInt(attrNS(s,'val'),10)/2; } } }
+            const pPr=firstNS(p,'pPr');
+            if(sz===11 && pPr){ const mr=firstNS(pPr,'rPr'); if(mr){ const s=firstNS(mr,'sz'); if(s){ sz=parseInt(attrNS(s,'val'),10)/2; } } }
+            paras.push({html, txt, sz});
+          }
+        }
+        // Two-column layout: the largest-font block (company name) is placed on
+        // the right, the smaller-font block (address) on the left, top-aligned,
+        // so the address sits BESIDE the name instead of stacked below it.
+        // Empty spacer paragraphs are dropped.
+        let innerTx=paras.map(p=>p.html).join('');
+        const nonEmpty=paras.filter(p=>p.txt.trim());
+        if(nonEmpty.length>1){
+          const maxSz=Math.max.apply(null, nonEmpty.map(p=>p.sz||0));
+          const right=nonEmpty.filter(p=>(p.sz||0)>=maxSz);
+          const left=nonEmpty.filter(p=>(p.sz||0)<maxSz);
+          if(left.length && right.length){
+            const leftHtml=left.map(p=>p.html).join('').replace(/text-align:right/g,'text-align:left');
+            const rightHtml=right.map(p=>p.html).join('');
+            innerTx=`<div style="display:flex;align-items:flex-start;gap:14px;">${leftHtml?`<div style="flex:1 1 auto;min-width:0;">${leftHtml}</div>`:''}${rightHtml?`<div style="flex:0 0 auto;text-align:right;">${rightHtml}</div>`:''}</div>`;
           }
         }
         const anchor=firstNSn(drEl,WPD,'anchor');
@@ -751,7 +775,20 @@ async function docxToHtml(arrayBuffer){
       const esc=escOf(s);
       return esc.replace(/⟦(\d+)⟧/g,'<sup style="font-size:0.65em;line-height:0">[$1]</sup>');
     }
-    if(hasTabs){
+    // Signature line restructure: "Директор (руководитель, начальник) ... ФИО"
+    // -> left column "Директор" over "ФИО", right column "(руководитель, начальник)".
+    const paraText = textRuns.map(t=>t.txt).join('').replace(/\s+/g,' ').trim();
+    const sigMatch = (!numPrefix && /Директор/.test(paraText) && /ФИО/.test(paraText)) ? paraText.match(/^Директор\s*(\([^)]*\))?\s*ФИО\s*$/) : null;
+    let sigHtml='';
+    if(sigMatch){
+      const st0=textRuns[0].st;
+      const decl=`font-family:'${mapFont(st0.font)}',Arial,sans-serif;font-size:${st0.size||11}pt;`+(st0.bold?'font-weight:700;':'')+(st0.italic?'font-style:italic;':'')+(st0.color?`color:${st0.color};`:'');
+      const dir=`<span style="${decl}">Директор</span>`;
+      const fio=`<span style="${decl}">ФИО</span>`;
+      const par=sigMatch[1]?`<span style="${decl}">${renderText(sigMatch[1])}</span>`:'';
+      sigHtml=`<div style="position:relative;width:100%;min-height:1.5em;white-space:nowrap;"><div style="text-align:left;line-height:1.7">${dir}<br>${fio}</div>${par?`<div style="position:absolute;right:0px;text-align:right">${par}</div>`:''}</div>`;
+    }
+    if(sigHtml){ inner=sigHtml; } else if(hasTabs){
       // Build segments split by tab characters, keeping per-segment style.
       const segs=[];
       for(const tr of textRuns){
@@ -833,11 +870,6 @@ async function docxToHtml(arrayBuffer){
     const hasText = inner.replace(/<[^>]+>/g,'').trim().length>0 || inner.indexOf('<img')>=0 || inner.indexOf('<div')>=0;
     // paragraph style
     let align = pp.align || 'left';
-    // Signature closing phrases ("С уважением,") are right-aligned in the Word
-    // original. Detect by content so the rule is general (any document that
-    // uses this standard Russian business-letter closing).
-    const paraText = textRuns.map(t=>t.txt).join('').replace(/\s+/g,' ').trim();
-    if(/^С уважением,?/.test(paraText)) align='right';
     // Effective paragraph font-size: first non-empty run size, else paragraph-
     // mark rPr (pPr/rPr), else style/default. Setting it on the <p> ensures
     // unitless line-height multiplies the actual text size (8pt) rather than
