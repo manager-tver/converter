@@ -359,13 +359,14 @@ async function docxToHtml(arrayBuffer){
       }
     }
     if(!pPr) return o;
-    // alignment: w:jc w:val = 0/left, 1/center, 2/right, 3/both(justify)
+    // alignment: w:jc w:val — Word uses string values ("left","center","right","both")
+    // but some producers emit numeric ("0","1","2","3"). Handle both.
     const jc=firstNS(pPr,'jc');
     if(jc){
       const v=attrNS(jc,'val');
-      if(v==='1') o.align='center';
-      else if(v==='2') o.align='right';
-      else if(v==='3') o.align='justify';
+      if(v==='center'||v==='1') o.align='center';
+      else if(v==='right'||v==='2') o.align='right';
+      else if(v==='both'||v==='3'||v==='justify') o.align='justify';
       else o.align='left';
     }
     // spacing (overrides style)
@@ -426,31 +427,27 @@ async function docxToHtml(arrayBuffer){
     for(let i=ilvl+1;i<arr.length;i++) arr[i]=0;
     return arr[ilvl];
   }
-  function formatNumber(num, ilvl){
-    const absId=numbering.numToAbs[num];
+  function formatNumber(numId, ilvl, n){
+    const absId=numbering.numToAbs[numId];
     const lvls=numbering.abstracts[absId];
     let lvl=lvls&&lvls[ilvl];
     if(!lvl) lvl={fmt:'decimal', txt:'%1.', start:1};
-    let n=num;
-    // decimal, lowerLetter, upperLetter, lowerRoman, upperRoman
-    if(lvl.fmt==='lowerLetter') n=String.fromCharCode(96+(n-1)%26);
-    else if(lvl.fmt==='upperLetter') n=String.fromCharCode(64+(n-1)%26);
-    else if(lvl.fmt==='lowerRoman') n=toRoman(n).toLowerCase();
-    else if(lvl.fmt==='upperRoman') n=toRoman(n);
+    const arr=counters[numId]||[];
+    function fmtVal(v, lv){
+      if(!lv) return String(v);
+      if(lv.fmt==='lowerLetter') return String.fromCharCode(96+(v-1)%26);
+      if(lv.fmt==='upperLetter') return String.fromCharCode(64+(v-1)%26);
+      if(lv.fmt==='lowerRoman') return toRoman(v).toLowerCase();
+      if(lv.fmt==='upperRoman') return toRoman(v);
+      return String(v);
+    }
     let label=lvl.txt||'%1.';
-    // fill %1..%9 with current levels
-    const arr=counters[num]||[];
+    // fill %1..%9 with current counters at each level
     label=label.replace(/%(\d+)/g,(m,idx)=>{
       const lv=parseInt(idx,10)-1;
       let v=arr[lv];
       if(v===undefined) v=1;
-      if(lvls&&lvls[lv]){
-        if(lvls[lv].fmt==='lowerLetter') v=String.fromCharCode(96+(v-1)%26);
-        else if(lvls[lv].fmt==='upperLetter') v=String.fromCharCode(64+(v-1)%26);
-        else if(lvls[lv].fmt==='lowerRoman') v=toRoman(v).toLowerCase();
-        else if(lvls[lv].fmt==='upperRoman') v=toRoman(v);
-      }
-      return String(v);
+      return fmtVal(v, lvls&&lvls[lv]);
     });
     return label;
   }
@@ -489,12 +486,12 @@ async function docxToHtml(arrayBuffer){
     let numPrefix='';
     if(pp.num){
       const n=nextNumber(pp.num.numId, pp.num.ilvl);
-      numPrefix=formatNumber(n, pp.num.ilvl);
+      numPrefix=formatNumber(pp.num.numId, pp.num.ilvl, n);
     }
-    // Determine if we have tabs in content OR defined tab stops -> render as flex row
+    // Determine if we have tabs in content OR defined tab stops -> render with absolute positioning
     const hasTabs = textRuns.some(t=>t.txt.indexOf('\t')>=0) || (pp.tabs && pp.tabs.length>0);
     if(hasTabs){
-      // Build segments split by tab characters.
+      // Build segments split by tab characters, keeping per-segment style.
       const segs=[];
       for(const tr of textRuns){
         const parts=tr.txt.split('\t');
@@ -503,8 +500,6 @@ async function docxToHtml(arrayBuffer){
           if(parts[i]!=='') segs.push({text:parts[i], st:tr.st});
         }
       }
-      // Assign each text segment a position: before first tab -> left; after tab i -> tab stop i.
-      // Build flex items: width = distance between consecutive tab stops (in px), last segment flex.
       const contentW=pageWPx - ml - mr;
       const stops=pp.tabs||[];
       // If tabs are used but no explicit stops defined, default to a right tab
@@ -514,45 +509,46 @@ async function docxToHtml(arrayBuffer){
       if(stopPx.length===0){
         stopPx=[{pos: contentW, val:'right'}];
       }
-      let tabIdx=0;
-      const items=[];
-      let curLeft=0;
-      for(const seg of segs){
-        if(seg.text==='\t'){
-          // open a new flex item positioned at this tab stop
-          const sp = stopPx[Math.min(tabIdx, stopPx.length-1)];
-          const widthPx = Math.max(0, sp.pos - curLeft);
-          items.push({width: widthPx, align: sp.val==='center'?'center':(sp.val==='right'?'right':'left'), flush:false});
-          curLeft = sp.pos;
-          tabIdx++;
+      function segStyle(st){
+        const sp=[];
+        if(st.bold) sp.push('font-weight:700');
+        if(st.italic) sp.push('font-style:italic');
+        if(st.size) sp.push(`font-size:${st.size}pt`);
+        return sp.length?` style="${sp.join(';')}"`:'';
+      }
+      function escOf(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      // Render as a relative container. Leading text (before first tab) is inline
+      // at left:0; each segment after a tab is absolutely positioned at its stop.
+      let row='<div style="position:relative;width:100%;min-height:1.5em;white-space:nowrap;">';
+      let segsHtml='';
+      let leading=''; // accumulate inline text before first tab
+      let tt=0; // number of tabs seen so far
+      for(let i=0;i<segs.length;i++){
+        if(segs[i].text==='\t'){ tt++; continue; }
+        if(tt===0){
+          // leading text: inline, left-aligned, accumulate
+          leading += `<span${segStyle(segs[i].st)}>${escOf(segs[i].text)}</span>`;
         } else {
-          // append text to the last item (or create a leading item)
-          const esc=seg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-          const sp2=seg.st;
-          const spParts=[];
-          if(sp2.bold) spParts.push('font-weight:700');
-          if(sp2.italic) spParts.push('font-style:italic');
-          if(sp2.size) spParts.push(`font-size:${sp2.size}pt`);
-          const sa=spParts.length?` style="${spParts.join(';')}"`:'';
-          if(items.length===0){
-            // leading text before any tab: flex item that grows
-            items.push({width:null, align:'left', html:`<span${sa}>${esc}</span>`, flex:true});
+          // after a tab: position per the corresponding stop
+          const sp=stopPx[Math.min(tt-1, stopPx.length-1)];
+          let posPx, align;
+          if(sp.val==='right'){ posPx=sp.pos; align='right'; }
+          else if(sp.val==='center'){ posPx=sp.pos; align='center'; }
+          else { posPx=sp.pos; align='left'; }
+          const ss=segStyle(segs[i].st);
+          let anchorStyle;
+          if(align==='right'){
+            anchorStyle=`position:absolute;right:${Math.max(0,contentW-posPx)}px;${ss}`;
+          } else if(align==='center'){
+            anchorStyle=`position:absolute;left:${posPx}px;transform:translateX(-50%);${ss}`;
           } else {
-            const it=items[items.length-1];
-            it.html=(it.html||'')+`<span${sa}>${esc}</span>`;
+            anchorStyle=`position:absolute;left:${posPx}px;${ss}`;
           }
+          segsHtml += `<span style="${anchorStyle}">${escOf(segs[i].text)}</span>`;
         }
       }
-      // last item grows to fill remaining width
-      if(items.length) items[items.length-1].flex=true;
-      // render flex row
-      let row='<div style="display:flex;width:100%;white-space:nowrap;">';
-      for(const it of items){
-        const w = it.width!=null ? `width:${it.width}px;` : (it.flex?`flex:1;`:'');
-        const ta = it.align==='center'?'text-align:center;':(it.align==='right'?'text-align:right;':'text-align:left;');
-        row += `<div style="${w}${ta}">${it.html||''}</div>`;
-      }
-      row+='</div>';
+      if(leading) segsHtml = leading + segsHtml;
+      row += segsHtml + '</div>';
       inner = (numPrefix?`<span style="font-weight:700">${numPrefix}</span> `:'') + row;
     } else {
       // plain (no tabs): render runs inline, with number prefix
@@ -587,12 +583,91 @@ async function docxToHtml(arrayBuffer){
     return `<p style="${pStyleParts.join(';')};margin:0">${inner}</p>`;
   }
 
-  // --- iterate body paragraphs ---
+  // --- build HTML for one table (signatures, layout tables) ---
+  function buildTable(tblEl){
+    // column widths from tblGrid (twips)
+    const grid=firstNS(tblEl,'tblGrid');
+    const colW=[];
+    if(grid){
+      for(const gc of byNS(grid,'gridCol')){
+        const w=attrNS(gc,'w');
+        if(w) colW.push(parseInt(w,10));
+      }
+    }
+    // borders from tblPr/tblBorders (val, sz, color)
+    const tblPr=firstNS(tblEl,'tblPr');
+    let borders={top:'1px solid #000',left:'1px solid #000',bottom:'1px solid #000',right:'1px solid #000',insideH:'1px solid #000',insideV:'1px solid #000'};
+    if(tblPr){
+      const b=firstNS(tblPr,'tblBorders');
+      if(b){
+        for(const edge of ['top','left','bottom','right','insideH','insideV']){
+          const el=firstNS(b,edge);
+          if(el){
+            const val=attrNS(el,'val');
+            const sz=attrNS(el,'sz');
+            const color=attrNS(el,'color');
+            if(val && val!=='none'){
+              const s=(sz?parseInt(sz,10)/8:1)+'px';
+              borders[edge]=`${s} solid ${color||'#000'}`;
+            } else {
+              borders[edge]='none';
+            }
+          }
+        }
+      }
+    }
+    const borderCSS=`border-top:${borders.top};border-left:${borders.left};border-bottom:${borders.bottom};border-right:${borders.right};`;
+    const cellBorderCSS=`border-top:${borders.top};border-left:${borders.left};border-bottom:${borders.bottom};border-right:${borders.right};border-top:${borders.insideH};border-left:${borders.insideV};`;
+    // table width
+    let tableW='100%';
+    if(colW.length && colW.every(w=>w>0)){
+      const tw=colW.reduce((a,b)=>a+b,0);
+      if(tw>0) tableW=`${tw}px`;
+    }
+    let rowsHtml='';
+    const trs=byNS(tblEl,'tr');
+    for(const tr of trs){
+      const tcCells=byNS(tr,'tc');
+      let cellsHtml='';
+      let ci=0;
+      for(const tc of tcCells){
+        const tcPr=firstNS(tc,'tcPr');
+        let wpx=null;
+        if(tcPr){
+          const tcw=firstNS(tcPr,'tcW');
+          if(tcw){
+            const w=attrNS(tcw,'w'); const type=attrNS(tcw,'type');
+            if(w && (type==='dxa'||!type)) wpx=twipToPx(parseInt(w,10));
+          }
+        }
+        if(wpx==null && colW[ci]) wpx=twipToPx(colW[ci]);
+        const wStyle = wpx?`width:${wpx}px;`:'';
+        let cellInner='';
+        for(const p of byNS(tc,'p')){
+          const ppHtml=buildParagraph(p);
+          if(ppHtml) cellInner += ppHtml;
+        }
+        cellsHtml += `<td style="${wStyle}${cellBorderCSS}vertical-align:top;">${cellInner}</td>`;
+        ci++;
+      }
+      rowsHtml += `<tr>${cellsHtml}</tr>`;
+    }
+    return `<table style="width:${tableW};table-layout:fixed;${borderCSS}">${rowsHtml}</table>`;
+  }
+
+  // --- iterate body in document order: paragraphs AND tables ---
   const body=firstNS(dom,'body');
-  const paras=body ? byNS(body,'p') : [];
   let htmlBody='';
-  for(const p of paras){
-    htmlBody += buildParagraph(p);
+  if(body){
+    for(const child of Array.from(body.children)){
+      if(child.namespaceURI===NS){
+        if(child.localName==='p'){
+          htmlBody += buildParagraph(child);
+        } else if(child.localName==='tbl'){
+          htmlBody += buildTable(child);
+        }
+      }
+    }
   }
 
   // assemble full HTML with page container
