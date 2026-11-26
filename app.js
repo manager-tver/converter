@@ -158,19 +158,29 @@ async function imageToImage(blob, targetFmt){
   return await canvasToBlob(canvas, mime, $('quality').value/100);
 }
 async function htmlToPdf(html){
-  const box=$('hiddenRender'); box.innerHTML=html;
-  const canvas=await html2canvas(box,{scale:2, useCORS:true, backgroundColor:'#ffffff'});
-  const imgData=canvas.toDataURL('image/jpeg',0.92);
+  const box=$('hiddenRender');
+  box.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:#fff;padding:36px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;line-height:1.5;box-sizing:border-box';
+  box.innerHTML=html;
+  await new Promise(r=>setTimeout(r,60));
+  const canvas=await html2canvas(box,{scale:2, useCORS:true, backgroundColor:'#ffffff', windowWidth:800});
   const { jsPDF } = window.jspdf;
   const pdf=new jsPDF({unit:'pt', format:'a4'});
   const pageW=pdf.internal.pageSize.getWidth(), pageH=pdf.internal.pageSize.getHeight();
-  const ratio=Math.min(pageW/canvas.width, pageH/canvas.height);
-  const w=canvas.width*ratio, h=canvas.height*ratio;
-  let y=0, remaining=h;
-  while(remaining>0){
-    if(y>0) pdf.addPage();
-    pdf.addImage(imgData,'JPEG',0,-y,w,h);
-    y+=pageH; remaining-=pageH;
+  const cw=canvas.width;                       // ширина canvas в пикселях
+  const pageHpx=cw*pageH/pageW;                // высота страницы в пикселях canvas (с сохранением пропорций)
+  let y=0;
+  while(y<canvas.height){
+    const sliceH=Math.min(pageHpx, canvas.height-y);
+    const slice=document.createElement('canvas');
+    slice.width=cw;
+    slice.height=sliceH;
+    const ctx=slice.getContext('2d');
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(0,0,cw,sliceH);
+    ctx.drawImage(canvas,0,y,cw,sliceH,0,0,cw,sliceH);
+    const imgData=slice.toDataURL('image/jpeg',0.92);
+    pdf.addImage(imgData,'JPEG',0,0,pageW,sliceH*pageW/cw);
+    y+=pageHpx;
   }
   return pdf.output('blob');
 }
