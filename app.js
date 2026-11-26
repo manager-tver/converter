@@ -2,21 +2,26 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const { jsPDF } = window.jspdf;
 
-// Register PT Sans (Cyrillic) as a web font via @font-face so html2canvas
-// can render Cyrillic text with the embedded base64 TTFs from fonts.js.
-function injectPtSansFontFace(){
-  const fam = window.__pdfFonts && window.__pdfFonts.PTSans;
-  if(!fam || document.getElementById('ptsans-fontface')) return;
-  const css = '@font-face{font-family:"PT Sans";font-style:normal;font-weight:400;src:url(data:font/ttf;base64,' + fam.normal + ') format("truetype");}'
-    + '@font-face{font-family:"PT Sans";font-style:normal;font-weight:700;src:url(data:font/ttf;base64,' + fam.bold + ') format("truetype");}'
-    + '@font-face{font-family:"PT Sans";font-style:italic;font-weight:400;src:url(data:font/ttf;base64,' + fam.italic + ') format("truetype");}'
-    + '@font-face{font-family:"PT Sans";font-style:italic;font-weight:700;src:url(data:font/ttf;base64,' + fam.bolditalic + ') format("truetype");}';
+// Register embedded TTF fonts as @font-face rules so html2canvas can render
+// text with the correct font. fonts.js embeds Tinos (Times New Roman
+// metric-compatible), Carlito (Calibri metric-compatible) and PT Sans.
+function injectEmbeddedFonts(){
+  const F = window.__pdfFonts;
+  if(!F || document.getElementById('pdf-fontfaces')) return;
+  const fams = { 'Tinos':'Tinos', 'Carlito':'Carlito', 'PTSans':'PT Sans' };
+  let css='';
+  for(const [key,family] of Object.entries(fams)){
+    const fam = F[key];
+    if(!fam) continue;
+    const w = (style, weight) => `@font-face{font-family:"${family}";font-style:${style};font-weight:${weight};src:url(data:font/ttf;base64,${fam[style==='italic'? (weight===700?'bolditalic':'italic') : (weight===700?'bold':'normal')]}) format("truetype");}`;
+    css += w('normal',400)+w('normal',700)+w('italic',400)+w('italic',700);
+  }
   const el=document.createElement('style');
-  el.id='ptsans-fontface';
+  el.id='pdf-fontfaces';
   el.textContent=css;
   document.head.appendChild(el);
 }
-injectPtSansFontFace();
+injectEmbeddedFonts();
 
 let currentFile = null;
 let fromFmt = 'auto';
@@ -225,7 +230,7 @@ function parseStyles(stylesXml){
   const firstNS=(p,n)=>byNS(p,n)[0]||null;
   const attrNS=(el,n)=>el.getAttributeNS(NS,n);
   const styles={};
-  let defaultR={sz:null,b:false,i:false};
+  let defaultR={sz:null,b:false,i:false,font:null};
   // docDefaults
   const dd=firstNS(dom,'docDefaults');
   if(dd){
@@ -234,13 +239,18 @@ function parseStyles(stylesXml){
       if(byNS(rPr,'sz').length){ const sz=firstNS(rPr,'sz'); if(sz) defaultR.sz=parseInt(attrNS(sz,'val'),10)/2; }
       if(byNS(rPr,'b').length) defaultR.b=true;
       if(byNS(rPr,'i').length) defaultR.i=true;
+      const rf=firstNS(rPr,'rFonts');
+      if(rf){ defaultR.font=(attrNS(rf,'ascii')||attrNS(rf,'hAnsi')||null); }
     }
   }
+  let defaultParaStyle=null;
   for(const st of byNS(dom,'style')){
     const id=attrNS(st,'styleId');
     if(!id) continue;
+    const isDefaultPara = (attrNS(st,'default')==='1') && (attrNS(st,'type')==='paragraph');
+    if(isDefaultPara && !defaultParaStyle) defaultParaStyle=id;
     const o={align:null, spacingBefore:0, spacingAfter:0, line:null, lineRule:'auto',
-      indLeft:0, indFirstLine:0, sz:null, b:false, i:false};
+      indLeft:0, indFirstLine:0, sz:null, b:false, i:false, font:null};
     const pPr=firstNS(st,'pPr');
     if(pPr){
       const jc=firstNS(pPr,'jc'); if(jc) o.align=attrNS(jc,'val');
@@ -262,10 +272,12 @@ function parseStyles(stylesXml){
       if(byNS(rPr,'sz').length){ const sz=firstNS(rPr,'sz'); if(sz) o.sz=parseInt(attrNS(sz,'val'),10)/2; }
       if(byNS(rPr,'b').length) o.b=true;
       if(byNS(rPr,'i').length) o.i=true;
+      const rf=firstNS(rPr,'rFonts');
+      if(rf){ o.font=(attrNS(rf,'ascii')||attrNS(rf,'hAnsi')||null); }
     }
     styles[id]=o;
   }
-  return {styles, defaultR};
+  return {styles, defaultR, defaultParaStyle};
 }
 
 // Parse word/numbering.xml -> abstractNum (level definitions) + num (id->abstractNumId).
@@ -313,7 +325,7 @@ async function docxToHtml(arrayBuffer){
   const dom=new DOMParser().parseFromString(docXml,'application/xml');
   // Load styles + numbering: they carry paragraph alignment, font sizes,
   // list numbering and tab stops that inline w:jc alone cannot express.
-  let stylesMap={styles:{}, defaultR:{sz:null,b:false,i:false}};
+  let stylesMap={styles:{}, defaultR:{sz:null,b:false,i:false,font:null}, defaultParaStyle:null};
   let numbering={abstracts:{}, numToAbs:{}};
   try{ const sx=await zip.file('word/styles.xml').async('string'); stylesMap=parseStyles(sx); }catch(e){}
   try{ const nx=await zip.file('word/numbering.xml').async('string'); numbering=parseNumbering(nx); }catch(e){}
@@ -337,6 +349,17 @@ async function docxToHtml(arrayBuffer){
   const byNS=(parent,name)=>Array.from(parent.getElementsByTagNameNS(NS,name));
   const firstNS=(parent,name)=>byNS(parent,name)[0]||null;
   const attrNS=(el,name)=>el.getAttributeNS(NS,name);
+
+  // Map a DOCX font name to an embedded web font (fonts.js). Times New Roman
+  // -> Tinos (metric-compatible), Calibri -> Carlito (metric-compatible),
+  // anything else -> PT Sans (always available, Cyrillic-capable).
+  function mapFont(name){
+    if(!name) return 'PT Sans';
+    const n=name.toLowerCase();
+    if(n.includes('times')||n.includes('tinos')||n.includes('liberation serif')) return 'Tinos';
+    if(n.includes('calibri')||n.includes('carlito')) return 'Carlito';
+    return 'PT Sans';
+  }
 
   // --- page size & margins (from sectPr) ---
   let pageW=11906, pageH=16838, marginTop=1440, marginRight=1440, marginBottom=1440, marginLeft=1440;
@@ -422,12 +445,14 @@ async function docxToHtml(arrayBuffer){
 
   // --- run properties -> inline style (default < style < direct rPr) ---
   function runStyle(rPr, style){
-    const s={bold: stylesMap.defaultR.b||(style&&style.b), italic: stylesMap.defaultR.i||(style&&style.i), size: (style&&style.sz)||stylesMap.defaultR.sz};
+    const s={bold: stylesMap.defaultR.b||(style&&style.b), italic: stylesMap.defaultR.i||(style&&style.i), size: (style&&style.sz)||stylesMap.defaultR.sz, font: (style&&style.font)||stylesMap.defaultR.font};
     if(!rPr) return s;
     if(byNS(rPr,'b').length) s.bold=true;
     if(byNS(rPr,'i').length) s.italic=true;
     const sz=firstNS(rPr,'sz');
     if(sz) s.size=parseInt(attrNS(sz,'val'),10)/2; // half-points -> points
+    const rf=firstNS(rPr,'rFonts');
+    if(rf){ const ascii=attrNS(rf,'ascii'); const hAnsi=attrNS(rf,'hAnsi'); s.font = (ascii||hAnsi)||s.font; }
     return s;
   }
 
@@ -480,6 +505,10 @@ async function docxToHtml(arrayBuffer){
     if(pPrEl){
       const ps=firstNS(pPrEl,'pStyle');
       if(ps){ const sid=attrNS(ps,'val'); styleObj=stylesMap.styles[sid]||null; }
+    }
+    // Fall back to the default paragraph style (Normal) when no pStyle is set.
+    if(!styleObj && stylesMap.defaultParaStyle){
+      styleObj=stylesMap.styles[stylesMap.defaultParaStyle]||null;
     }
     const runs=byNS(pEl,'r');
     // collect raw text + per-run style, preserving tab/br markers
@@ -538,6 +567,8 @@ async function docxToHtml(arrayBuffer){
       }
       function decl(st){
         const sp=[];
+        const fam=mapFont(st.font);
+        sp.push(`font-family:'${fam}',Arial,sans-serif`);
         if(st.bold) sp.push('font-weight:700');
         if(st.italic) sp.push('font-style:italic');
         if(st.size) sp.push(`font-size:${st.size}pt`);
@@ -581,6 +612,7 @@ async function docxToHtml(arrayBuffer){
       // plain (no tabs): render runs inline, with number prefix
       for(const tr of textRuns){
         const styleParts=[];
+        styleParts.push(`font-family:'${mapFont(tr.st.font)}',Arial,sans-serif`);
         if(tr.st.bold) styleParts.push('font-weight:700');
         if(tr.st.italic) styleParts.push('font-style:italic');
         if(tr.st.size) styleParts.push(`font-size:${tr.st.size}pt`);
@@ -592,7 +624,12 @@ async function docxToHtml(arrayBuffer){
     if(!inner.replace(/<[^>]+>/g,'').trim()) return '';
     // paragraph style
     const align = pp.align || 'left';
-    const pStyleParts=[`text-align:${align}`];
+    // Effective paragraph font-size: first non-empty run size, else style/default.
+    // Setting it on the <p> ensures unitless line-height multiplies the actual
+    // text size (8pt) rather than the inherited body size (11pt) -> no overflow.
+    const effSize = (textRuns.find(t=>t.st.size)||{st:{}}).st.size || (styleObj&&styleObj.sz) || stylesMap.defaultR.sz || 11;
+    const effFont = (textRuns.find(t=>t.st.font)||{st:{}}).st.font || (styleObj&&styleObj.font) || stylesMap.defaultR.font;
+    pStyleParts=[`text-align:${align}`, `font-size:${effSize}pt`, `font-family:'${mapFont(effFont)}',Arial,sans-serif`];
     if(pp.spacingBefore) pStyleParts.push(`margin-top:${twipToPx(pp.spacingBefore)}px`);
     if(pp.spacingAfter) pStyleParts.push(`margin-bottom:${twipToPx(pp.spacingAfter)}px`);
     if(pp.line){
@@ -706,7 +743,7 @@ async function docxToHtml(arrayBuffer){
     footnotesHtml = `<div style="margin-top:18px;border-top:0.5pt solid #999;padding-top:6px;">`;
     const sortedIds=Object.keys(footnotes).map(Number).sort((a,b)=>a-b);
     for(const id of sortedIds){
-      footnotesHtml += `<p style="font-size:8pt;line-height:1.2;margin:0 0 4px 0;"><span style="font-weight:700">[${id}]</span> ${escFoot(footnotes[id])}</p>`;
+      footnotesHtml += `<p style="font-family:'Carlito',Arial,sans-serif;font-size:8pt;line-height:1.2;margin:0 0 4px 0;"><span style="font-weight:700">[${id}]</span> ${escFoot(footnotes[id])}</p>`;
     }
     footnotesHtml += `</div>`;
   }
