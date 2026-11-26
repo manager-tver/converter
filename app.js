@@ -507,15 +507,20 @@ async function docxToHtml(arrayBuffer){
       // Build flex items: width = distance between consecutive tab stops (in px), last segment flex.
       const contentW=pageWPx - ml - mr;
       const stops=pp.tabs||[];
-      // Map tab index -> {posPx, val}
-      const stopPx=stops.map(s=>({pos: twipToPx(s.pos), val:s.val}));
+      // If tabs are used but no explicit stops defined, default to a right tab
+      // at the content edge so "left text <tab> right text" places the right
+      // part at the right margin (Word-like).
+      let stopPx=stops.map(s=>({pos: twipToPx(s.pos), val:s.val}));
+      if(stopPx.length===0){
+        stopPx=[{pos: contentW, val:'right'}];
+      }
       let tabIdx=0;
       const items=[];
       let curLeft=0;
       for(const seg of segs){
         if(seg.text==='\t'){
           // open a new flex item positioned at this tab stop
-          const sp = stopPx[Math.min(tabIdx, stopPx.length-1)] || {pos: twipToPx(4680), val:'left'};
+          const sp = stopPx[Math.min(tabIdx, stopPx.length-1)];
           const widthPx = Math.max(0, sp.pos - curLeft);
           items.push({width: widthPx, align: sp.val==='center'?'center':(sp.val==='right'?'right':'left'), flush:false});
           curLeft = sp.pos;
