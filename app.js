@@ -714,7 +714,7 @@ async function docxToHtml(arrayBuffer){
   }
 
   // --- build HTML for one paragraph ---
-  function buildParagraph(pEl){
+  function buildParagraph(pEl, inCell){
     const pp=readParaProps(pEl);
     // resolve paragraph style for run defaults
     const pPrEl=firstNS(pEl,'pPr');
@@ -896,8 +896,12 @@ async function docxToHtml(arrayBuffer){
       return `<p style="text-align:${align};font-size:${effSize}pt;font-family:'${mapFont(effFont)}',Arial,sans-serif;${lh};margin:0">&nbsp;</p>`;
     }
     pStyleParts=[`text-align:${align}`, `font-size:${effSize}pt`, `font-family:'${mapFont(effFont)}',Arial,sans-serif`];
-    if(pp.spacingBefore) pStyleParts.push(`margin-top:${twipToPx(pp.spacingBefore)}px`);
-    if(pp.spacingAfter) pStyleParts.push(`margin-bottom:${twipToPx(pp.spacingAfter)}px`);
+    // Inside a table cell, suppress paragraph spacing (spacingBefore/After):
+    // DOCX cell paragraphs carry spacing that would inflate table height and
+    // shift subsequent content, throwing off page breaks. Cell padding/borders
+    // already separate rows, so the spacing is not needed visually.
+    if(pp.spacingBefore && !inCell) pStyleParts.push(`margin-top:${twipToPx(pp.spacingBefore)}px`);
+    if(pp.spacingAfter && !inCell) pStyleParts.push(`margin-bottom:${twipToPx(pp.spacingAfter)}px`);
     if(pp.line){
       if(pp.lineRule==='exact'||pp.lineRule==='atLeast'){
         pStyleParts.push(`line-height:${twipToPx(pp.line)}px`);
@@ -1022,7 +1026,7 @@ async function docxToHtml(arrayBuffer){
         const wStyle = wpx?`width:${wpx}px;`:'';
         let cellInner='';
         for(const p of byNS(tc,'p')){
-          const ppHtml=buildParagraph(p);
+          const ppHtml=buildParagraph(p, true);
           if(ppHtml) cellInner += ppHtml;
         }
         cellsHtml += `<td style="${wStyle}${cellBorderCSS2}vertical-align:top;">${cellInner}</td>`;
