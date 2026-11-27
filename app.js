@@ -1144,12 +1144,14 @@ async function renderHtmlToPageCanvases(html){
   // would cross the current page's bottom edge. Page 1 spans the full page
   // height (its top band already carries the page margin); continuation pages
   // carry a top-margin band then content of height (pageHPx - topPadPx).
+  // would cross the current page's bottom edge.
   const pageStarts=[0];
   let pageBottom=pageHPx;
   for(const b of blocks){
     if(b.top+b.height <= pageBottom){ continue; }
     pageStarts.push(b.top);
     pageBottom=b.top+contentH;
+    pageBottom=b.top+pageHPx;
   }
   pageStarts.push(canvas.height);
   const canvases=[];
