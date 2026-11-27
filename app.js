@@ -789,7 +789,7 @@ async function docxToHtml(arrayBuffer){
       // as a right-tab so the trailing text lands at the right margin, matching
       // Word's justify behaviour. Runs that are entirely spaces (blank spacer
       // lines) are left untouched so they keep collapsing to a blank line.
-      if(/\S/.test(txt)) txt = txt.replace(/ {4,}/g, '\t');
+      if(/\S/.test(txt)) txt = txt.replace(/^ +/, '').replace(/ {4,}/g, '\t');
       const tabs=byNS(r,'tab').filter(t=>!isInsideTextbox(t,r) && !isInsideFallback(t,r));
       for(let i=0;i<tabs.length;i++) txt += '\t';
       const brs=byNS(r,'br').filter(t=>!isInsideTextbox(t,r) && !isInsideFallback(t,r));
