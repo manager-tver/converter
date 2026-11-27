@@ -265,6 +265,12 @@ async function textToDocx(text){
   const doc=new Document({sections:[{children: text.split('\n').map(l=>new Paragraph({children:[new TextRun(l||' ')]}))}]});
   return await Packer.toBlob(doc);
 }
+// Theme fonts resolved from word/theme/theme1.xml. DOCX frequently names fonts
+// via w:asciiTheme="minorHAnsi"/"majorHAnsi"; these hold the theme's latin
+// typeface (Calibri, Cambria, ...). Declared at script scope so parseStyles and
+// the docx loader can both see it; filled during DOCX load.
+let themeFonts={minor:null, major:null};
+
 // Parse word/styles.xml -> map of styleId -> {align, spacing, line, ind, sz, b, i}
 // and default run properties.
 function parseStyles(stylesXml){
@@ -284,7 +290,15 @@ function parseStyles(stylesXml){
       if(byNS(rPr,'b').length) defaultR.b=true;
       if(byNS(rPr,'i').length) defaultR.i=true;
       const rf=firstNS(rPr,'rFonts');
-      if(rf){ defaultR.font=(attrNS(rf,'ascii')||attrNS(rf,'hAnsi')||null); }
+      if(rf){
+      let df=(attrNS(rf,'ascii')||attrNS(rf,'hAnsi'));
+      if(!df){
+        const aT=attrNS(rf,'asciiTheme'), hT=attrNS(rf,'hAnsiTheme');
+        if(aT==='majorHAnsi'||hT==='majorHAnsi') df=themeFonts.major;
+        else if(aT==='minorHAnsi'||hT==='minorHAnsi') df=themeFonts.minor;
+      }
+      defaultR.font=df||null;
+    }
     }
   }
   let defaultParaStyle=null;
@@ -386,6 +400,17 @@ async function docxToHtml(arrayBuffer){
   // list numbering and tab stops that inline w:jc alone cannot express.
   let stylesMap={styles:{}, defaultR:{sz:null,b:false,i:false,font:null}, defaultParaStyle:null};
   let numbering={abstracts:{}, numToAbs:{}};
+  // Load theme fonts (word/theme/theme1.xml). DOCX often specifies fonts via
+  // w:asciiTheme="minorHAnsi"/"majorHAnsi" rather than a literal name; we must
+  // resolve those to the theme's actual typeface (Calibri, Cambria, ...) so
+  // runStyle can pick the metric-compatible embedded font (Calibri -> Carlito).
+  try{
+    const tx=await zip.file('word/theme/theme1.xml').async('string');
+    const mj=/<a:majorFont>[\s\S]*?<a:latin typeface="([^"]*)"/.exec(tx);
+    const mn=/<a:minorFont>[\s\S]*?<a:latin typeface="([^"]*)"/.exec(tx);
+    if(mj) themeFonts.major=mj[1];
+    if(mn) themeFonts.minor=mn[1];
+  }catch(e){}
   try{ const sx=await zip.file('word/styles.xml').async('string'); stylesMap=parseStyles(sx); }catch(e){}
   try{ const nx=await zip.file('word/numbering.xml').async('string'); numbering=parseNumbering(nx); }catch(e){}
   // Load footnotes (referenced text appears at bottom of page).
@@ -667,7 +692,17 @@ async function docxToHtml(arrayBuffer){
     const sz=firstNS(rPr,'sz');
     if(sz) s.size=parseInt(attrNS(sz,'val'),10)/2; // half-points -> points
     const rf=firstNS(rPr,'rFonts');
-    if(rf){ const ascii=attrNS(rf,'ascii'); const hAnsi=attrNS(rf,'hAnsi'); s.font = (ascii||hAnsi)||s.font; }
+    if(rf){
+      let fname=(attrNS(rf,'ascii')||attrNS(rf,'hAnsi'));
+      // Resolve theme references (minorHAnsi/majorHAnsi) to the theme typeface.
+      if(!fname){
+        const ascTheme=attrNS(rf,'asciiTheme');
+        const hAnsiTheme=attrNS(rf,'hAnsiTheme');
+        if(ascTheme==='majorHAnsi'||hAnsiTheme==='majorHAnsi') fname=themeFonts.major;
+        else if(ascTheme==='minorHAnsi'||hAnsiTheme==='minorHAnsi') fname=themeFonts.minor;
+      }
+      s.font = fname || s.font;
+    }
     const colEl=firstNS(rPr,'color');
     if(colEl) s.color=normColor(attrNS(colEl,'val'));
     return s;
