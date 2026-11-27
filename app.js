@@ -1093,39 +1093,60 @@ async function renderHtmlToPageCanvases(html){
   const cw=canvas.width;
   // A4 aspect ratio: width:height = 1:1.414. At 800px render width, page height = 800*1.414.
   const pageHPx = cw * Math.sqrt(2); // A4 portrait
+  // Paginate on block boundaries. A fixed-interval slice cut paragraphs and
+  // tables in half at every page edge (tables split, signature blocks severed,
+  // text "walking" across the break). Instead, measure each top-level block and
+  // start a new page at a block boundary so no block is ever cut.
+  const SCALE=2; // html2canvas scale
+  const bodyEl=box.querySelector('.docbody');
+  const footEl=box.querySelector('.docfoot');
+  const blockEls=[];
+  if(bodyEl){ blockEls.push.apply(blockEls, Array.from(bodyEl.children)); }
+  if(footEl){ blockEls.push(footEl); }
+  const boxRect=box.getBoundingClientRect();
+  const blocks=blockEls.map(el=>{
+    const r=el.getBoundingClientRect();
+    return { top:(r.top-boxRect.top)*SCALE, height:r.height*SCALE };
+  }).filter(b=>b.height>0).sort((a,b)=>a.top-b.top);
+  // Page start positions (canvas y). A new page starts at a block whose bottom
+  // would cross the current page's bottom edge.
+  const pageStarts=[0];
+  let pageBottom=pageHPx;
+  for(const b of blocks){
+    if(b.top+b.height <= pageBottom){ continue; }
+    pageStarts.push(b.top);
+    pageBottom=b.top+pageHPx;
+  }
+  pageStarts.push(canvas.height);
   const canvases=[];
-  let y=0;
-  while(y<canvas.height){
-    const sliceH=Math.min(pageHPx, canvas.height-y);
+  for(let i=0;i<pageStarts.length-1;i++){
+    const start=pageStarts[i];
+    const contentEnd=Math.min(pageStarts[i+1], start+pageHPx, canvas.height);
+    if(contentEnd<=start) continue;
+    const sliceH=Math.round(pageHPx);
     const slice=document.createElement('canvas');
     slice.width=cw; slice.height=sliceH;
     const ctx=slice.getContext('2d');
     ctx.fillStyle='#ffffff';
     ctx.fillRect(0,0,cw,sliceH);
-    ctx.drawImage(canvas,0,y,cw,sliceH,0,0,cw,sliceH);
+    const drawH=contentEnd-start;
+    ctx.drawImage(canvas,0,start,cw,drawH,0,0,cw,drawH);
     canvases.push(slice);
-    y+=pageHPx;
   }
-  // Trim trailing blank slices: html2canvas can render a canvas a few px taller
-  // than a whole number of pages (rounding / min-height), producing a near-empty
-  // final slice. Drop any trailing slice that is entirely white so a document that
-  // fits on one page never gains a phantom second (blank) page.
+  // Trim a trailing entirely-white page (phantom blank page for docs that fit
+  // on whole pages).
   try{
-    const sctx=canvas.getContext('2d');
-    while(canvases.length>1){
-      const yStart=(canvases.length-1)*pageHPx;
-      const regionH=Math.min(pageHPx, canvas.height-yStart);
-      if(regionH<=0){ canvases.pop(); continue; }
-      // Sample the region for any non-white pixel (strided for speed).
-      const data=sctx.getImageData(0, Math.floor(yStart), cw, Math.floor(regionH)).data;
+    if(canvases.length>1){
+      const last=canvases[canvases.length-1];
+      const lctx=last.getContext('2d');
+      const ld=lctx.getImageData(0,0,cw,last.height).data;
       let blank=true;
-      const stride=4*7; // sample every 7th pixel
-      for(let i=0;i<data.length;i+=stride){
-        if(data[i]<250||data[i+1]<250||data[i+2]<250){ blank=false; break; }
+      for(let i=0;i<ld.length;i+=4*7){
+        if(ld[i]<250||ld[i+1]<250||ld[i+2]<250){ blank=false; break; }
       }
-      if(blank) canvases.pop(); else break;
+      if(blank) canvases.pop();
     }
-  }catch(e){ /* getImageData unavailable (e.g. tainted canvas) - keep all slices */ }
+  }catch(e){ /* getImageData unavailable - keep all slices */ }
   return canvases;
 }
 async function docxToText(arrayBuffer){
