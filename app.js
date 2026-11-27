@@ -939,7 +939,6 @@ async function docxToHtml(arrayBuffer){
       }
     }
     const borderCSS=`border-top:${borders.top};border-left:${borders.left};border-bottom:${borders.bottom};border-right:${borders.right};`;
-    const cellBorderCSS=`border-top:${borders.top};border-left:${borders.left};border-bottom:${borders.bottom};border-right:${borders.right};border-top:${borders.insideH};border-left:${borders.insideV};`;
     // table width
     let tableW='100%';
     if(colW.length && colW.every(w=>w>0)){
@@ -955,6 +954,7 @@ async function docxToHtml(arrayBuffer){
       for(const tc of tcCells){
         const tcPr=firstNS(tc,'tcPr');
         let wpx=null;
+        let cellB='none';     // per-cell borders (tcBorders override tblBorders)
         if(tcPr){
           const tcw=firstNS(tcPr,'tcW');
           if(tcw){
@@ -963,13 +963,38 @@ async function docxToHtml(arrayBuffer){
           }
         }
         if(wpx==null && colW[ci]) wpx=twipToPx(colW[ci]);
+        // per-cell borders: tcBorders (top/left/bottom/right) override table borders
+        let cTop=borders.top, cLeft=borders.left, cBottom=borders.bottom, cRight=borders.right;
+        if(tcPr){
+          const tcB=firstNS(tcPr,'tcBorders');
+          if(tcB){
+            const setEdge=(edge,css)=>{
+              const el=firstNS(tcB,edge);
+              if(!el) return;
+              const val=attrNS(el,'val');
+              const sz=attrNS(el,'sz');
+              const color=normColor(attrNS(el,'color')) || '#000';
+              if(val && val!=='none'){
+                const s=(sz?parseInt(sz,10)/8:1)+'px';
+                css(`${s} solid ${color}`);
+              } else {
+                css('none');
+              }
+            };
+            setEdge('top',v=>cTop=v);
+            setEdge('left',v=>cLeft=v);
+            setEdge('bottom',v=>cBottom=v);
+            setEdge('right',v=>cRight=v);
+          }
+        }
+        const cellBorderCSS2=`border-top:${cTop};border-left:${cLeft};border-bottom:${cBottom};border-right:${cRight};`;
         const wStyle = wpx?`width:${wpx}px;`:'';
         let cellInner='';
         for(const p of byNS(tc,'p')){
           const ppHtml=buildParagraph(p);
           if(ppHtml) cellInner += ppHtml;
         }
-        cellsHtml += `<td style="${wStyle}${cellBorderCSS}vertical-align:top;">${cellInner}</td>`;
+        cellsHtml += `<td style="${wStyle}${cellBorderCSS2}vertical-align:top;">${cellInner}</td>`;
         ci++;
       }
       rowsHtml += `<tr>${cellsHtml}</tr>`;
@@ -1098,6 +1123,13 @@ async function renderHtmlToPageCanvases(html){
   // text "walking" across the break). Instead, measure each top-level block and
   // start a new page at a block boundary so no block is ever cut.
   const SCALE=2; // html2canvas scale
+  // Top page margin (.docpage padding-top) in canvas px. Page 1 already carries
+  // this blank band at the top of the canvas; continuation pages must reproduce
+  // it so their content does not sit flush against the page edge.
+  const docpageEl=box.querySelector('.docpage');
+  const topPadCss=docpageEl?(parseFloat(getComputedStyle(docpageEl).paddingTop)||0):0;
+  const topPadPx=topPadCss*SCALE;
+  const contentH=Math.max(1, pageHPx-topPadPx);
   const bodyEl=box.querySelector('.docbody');
   const footEl=box.querySelector('.docfoot');
   const blockEls=[];
@@ -1109,19 +1141,23 @@ async function renderHtmlToPageCanvases(html){
     return { top:(r.top-boxRect.top)*SCALE, height:r.height*SCALE };
   }).filter(b=>b.height>0).sort((a,b)=>a.top-b.top);
   // Page start positions (canvas y). A new page starts at a block whose bottom
-  // would cross the current page's bottom edge.
+  // would cross the current page's bottom edge. Page 1 spans the full page
+  // height (its top band already carries the page margin); continuation pages
+  // carry a top-margin band then content of height (pageHPx - topPadPx).
   const pageStarts=[0];
   let pageBottom=pageHPx;
   for(const b of blocks){
     if(b.top+b.height <= pageBottom){ continue; }
     pageStarts.push(b.top);
-    pageBottom=b.top+pageHPx;
+    pageBottom=b.top+contentH;
   }
   pageStarts.push(canvas.height);
   const canvases=[];
   for(let i=0;i<pageStarts.length-1;i++){
     const start=pageStarts[i];
-    const contentEnd=Math.min(pageStarts[i+1], start+pageHPx, canvas.height);
+    const isFirst=(i===0);
+    const avail=isFirst?pageHPx:contentH;
+    const contentEnd=Math.min(pageStarts[i+1], start+avail, canvas.height);
     if(contentEnd<=start) continue;
     const sliceH=Math.round(pageHPx);
     const slice=document.createElement('canvas');
@@ -1130,7 +1166,8 @@ async function renderHtmlToPageCanvases(html){
     ctx.fillStyle='#ffffff';
     ctx.fillRect(0,0,cw,sliceH);
     const drawH=contentEnd-start;
-    ctx.drawImage(canvas,0,start,cw,drawH,0,0,cw,drawH);
+    const dy=isFirst?0:topPadPx;
+    ctx.drawImage(canvas,0,start,cw,drawH,0,dy,cw,drawH);
     canvases.push(slice);
   }
   // Trim a trailing entirely-white page (phantom blank page for docs that fit
