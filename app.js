@@ -814,7 +814,7 @@ async function docxToHtml(arrayBuffer){
     // escape + render footnote markers ⟦id⟧ as superscript [n]
     function renderText(s){
       const esc=escOf(s);
-      return esc.replace(/⟦(\d+)⟧/g,'<sup style="font-size:0.65em;line-height:0">[$1]</sup>');
+      return esc.replace(/⟦(\d+)⟧/g,'<sup class="fnref" data-fid="$1" style="font-size:0.65em;line-height:0">[$1]</sup>');
     }
     // Signature line restructure: "Директор (руководитель, начальник) ... ФИО"
     // -> left column "Директор" over "ФИО", right column "(руководитель, начальник)".
@@ -1128,7 +1128,7 @@ async function docxToHtml(arrayBuffer){
     footnotesHtml = `<div style="margin-top:6px;border-top:0.5pt solid #999;padding-top:6px;">`;
     const sortedIds=Object.keys(footnotes).map(Number).sort((a,b)=>a-b);
     for(const id of sortedIds){
-      footnotesHtml += `<p style="font-family:'Carlito',Arial,sans-serif;font-size:8pt;line-height:1.2;margin:0 0 4px 0;"><span style="font-weight:700">[${id}]</span> ${escFoot(footnotes[id])}</p>`;
+      footnotesHtml += `<p data-fid="${id}" style="font-family:'Carlito',Arial,sans-serif;font-size:8pt;line-height:1.2;margin:0 0 4px 0;"><span style="font-weight:700">[${id}]</span> ${escFoot(footnotes[id])}</p>`;
     }
     footnotesHtml += `</div>`;
   }
@@ -1181,6 +1181,12 @@ async function renderHtmlToPageCanvases(html){
   // Render at A4 width. 800px ~ A4 width at 96dpi scaled.
   box.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:#fff;padding:0;font-family:\"PT Sans\",Arial,Helvetica,sans-serif;font-size:11pt;color:#000;line-height:1.5;box-sizing:border-box;white-space:normal;';
   box.innerHTML=html;
+  // Footnotes are page-local (Word renders each at the bottom of the page that
+  // contains its reference). Hide the footnote block from the main render so it
+  // takes no flow space and never forces a page break; it is painted separately
+  // onto the page of its reference below.
+  const _footEl0=box.querySelector('.docfoot');
+  if(_footEl0){ _footEl0.style.display='none'; }
   // Ensure the PT Sans web font is fully loaded before rendering (avoids tofu/missing glyphs).
   try{ await document.fonts.ready; }catch(e){}
   await new Promise(r=>setTimeout(r,120));
@@ -1211,7 +1217,9 @@ async function renderHtmlToPageCanvases(html){
   const footEl=box.querySelector('.docfoot');
   const blockEls=[];
   if(bodyEl){ blockEls.push.apply(blockEls, Array.from(bodyEl.children)); }
-  if(footEl){ blockEls.push(footEl); }
+  // Footnotes are excluded from pagination: each is painted at the bottom of
+  // the page that contains its reference marker (Word behaviour), so a full
+  // page of body content never pushes a footnote onto the next page.
   const boxRect=box.getBoundingClientRect();
   const blocks=blockEls.map(el=>{
     const r=el.getBoundingClientRect();
@@ -1250,6 +1258,7 @@ async function renderHtmlToPageCanvases(html){
     const drawH=contentEnd-start;
     const dy=isFirst?0:topPadPx;
     ctx.drawImage(canvas,0,start,cw,drawH,0,dy,cw,drawH);
+    slice._pageIdx=i;
     canvases.push(slice);
   }
   // Trim a trailing entirely-white page (phantom blank page for docs that fit
@@ -1266,6 +1275,60 @@ async function renderHtmlToPageCanvases(html){
       if(blank) canvases.pop();
     }
   }catch(e){ /* getImageData unavailable - keep all slices */ }
+  // --- paint footnotes at the bottom of the page that contains their
+  // reference marker (Word behaviour). Footnotes were excluded from pagination
+  // above; each footnote group is rendered to its own canvas and composited at
+  // the bottom of its reference's page, above the bottom margin.
+  const _foot=box.querySelector('.docfoot');
+  if(_foot){
+    const _fnParas=Array.from(_foot.querySelectorAll('p[data-fid]'));
+    if(_fnParas.length){
+      const _contentW=Math.max(1, docpageEl.clientWidth - (parseFloat(cs.paddingLeft)||0) - (parseFloat(cs.paddingRight)||0));
+      const _mlPx=(parseFloat(cs.paddingLeft)||0)*SCALE;
+      // map each footnote to the page of its reference marker
+      const _fidPage={};
+      for(const _p of _fnParas){
+        const _fid=_p.getAttribute('data-fid');
+        const _ref=box.querySelector('.fnref[data-fid="'+_fid+'"]');
+        if(!_ref) continue;
+        const _r=_ref.getBoundingClientRect();
+        const _y=(_r.top-boxRect.top)*SCALE;
+        let _pi=-1;
+        for(let _i=0;_i<pageStarts.length-1;_i++){
+          if(_y>=pageStarts[_i] && _y<pageStarts[_i+1]){ _pi=_i; break; }
+        }
+        if(_pi<0) _pi=pageStarts.length-2;
+        _fidPage[_fid]=_pi;
+      }
+      // group footnote paragraphs by page
+      const _byPage={};
+      for(const _p of _fnParas){
+        const _fid=_p.getAttribute('data-fid');
+        const _pi=_fidPage[_fid];
+        if(_pi===undefined) continue;
+        (_byPage[_pi]=_byPage[_pi]||[]).push(_p);
+      }
+      // render each page's footnote group and composite at the page bottom
+      for(const _piStr of Object.keys(_byPage)){
+        const _pi=Number(_piStr);
+        const _slice=canvases[_pi];
+        if(!_slice) continue;
+        const _grp=_byPage[_pi].slice().sort((a,b)=>Number(a.getAttribute('data-fid'))-Number(b.getAttribute('data-fid')));
+        const _wrapHtml='<div style="margin-top:6px;border-top:0.5pt solid #999;padding-top:6px;">'+_grp.map(p=>p.outerHTML).join('')+'</div>';
+        const _tmp=document.createElement('div');
+        _tmp.style.cssText='position:absolute;left:-9999px;top:0;width:'+_contentW+'px;background:#fff;';
+        _tmp.innerHTML=_wrapHtml;
+        document.body.appendChild(_tmp);
+        try{
+          const _fc=await html2canvas(_tmp,{scale:2, useCORS:true, backgroundColor:'#ffffff', windowWidth:800, logging:false});
+          const _ctx=_slice.getContext('2d');
+          const _y0=_slice.height-botPadPx-_fc.height;
+          if(_y0>0){ _ctx.drawImage(_fc,_mlPx,_y0); }
+        }catch(e){}
+        document.body.removeChild(_tmp);
+      }
+    }
+  }
   return canvases;
 }
 async function docxToText(arrayBuffer){
