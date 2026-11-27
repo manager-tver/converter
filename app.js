@@ -917,7 +917,11 @@ async function docxToHtml(arrayBuffer){
     // must NOT reserve flow height, otherwise the whole body (and signatures)
     // shifts down and the document spills onto a second page. maxDrawingH is
     // kept only for the drawingsHtml merge above.
-    return `<p style="${pStyleParts.join(';')};margin:0">${inner}</p>`;
+    // Do NOT append ";margin:0" here: it is a shorthand that would override the
+    // margin-top/margin-bottom values added above from spacingBefore/spacingAfter,
+    // collapsing paragraph spacing and throwing off pagination. The base p margin
+    // is already 0 via the global stylesheet (p{margin:0}).
+    return `<p style="${pStyleParts.join(';')}">${inner}</p>`;
   }
 
   // --- build HTML for one table (signatures, layout tables) ---
