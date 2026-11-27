@@ -319,6 +319,21 @@ function parseStyles(stylesXml){
       const rf=firstNS(rPr,'rFonts');
       if(rf){ o.font=(attrNS(rf,'ascii')||attrNS(rf,'hAnsi')||null); }
     }
+    // table styles: capture tblBorders (raw) so buildTable can use them as the
+    // base border set when a table references this style via tblStyle.
+    if(attrNS(st,'type')==='table'){
+      const stTblPr=firstNS(st,'tblPr');
+      if(stTblPr){
+        const sb=firstNS(stTblPr,'tblBorders');
+        if(sb){
+          o.tblBorders={};
+          for(const edge of ['top','left','bottom','right','insideH','insideV']){
+            const el=firstNS(sb,edge);
+            if(el){ o.tblBorders[edge]={val:attrNS(el,'val'), sz:attrNS(el,'sz'), color:attrNS(el,'color')}; }
+          }
+        }
+      }
+    }
     styles[id]=o;
   }
   return {styles, defaultR, defaultParaStyle};
@@ -916,25 +931,37 @@ async function docxToHtml(arrayBuffer){
         if(w) colW.push(parseInt(w,10));
       }
     }
-    // borders from tblPr/tblBorders (val, sz, color)
+    // borders from tblPr/tblBorders (val, sz, color), with table-style borders
+    // (tblStyle -> stylesMap.styles[id].tblBorders) as the base; direct tblBorders
+    // on the table override the style. This matches Word, where a table style
+    // supplies borders and direct formatting takes precedence.
     const tblPr=firstNS(tblEl,'tblPr');
+    function normEdge(e){
+      const val=e && e.val;
+      if(!val || val==='none') return 'none';
+      const sz=e && e.sz;
+      const color=normColor(e && e.color) || '#000';
+      return `${(sz?parseInt(sz,10)/8:1)}px solid ${color}`;
+    }
     let borders={top:'none',left:'none',bottom:'none',right:'none',insideH:'none',insideV:'none'};
     if(tblPr){
+      // 1) base from table style
+      const ts=firstNS(tblPr,'tblStyle');
+      if(ts){
+        const sid=attrNS(ts,'val');
+        const st=stylesMap.styles[sid];
+        if(st && st.tblBorders){
+          for(const edge of ['top','left','bottom','right','insideH','insideV']){
+            if(st.tblBorders[edge]) borders[edge]=normEdge({val:st.tblBorders[edge].val,sz:st.tblBorders[edge].sz,color:st.tblBorders[edge].color});
+          }
+        }
+      }
+      // 2) direct tblBorders override the style
       const b=firstNS(tblPr,'tblBorders');
       if(b){
         for(const edge of ['top','left','bottom','right','insideH','insideV']){
           const el=firstNS(b,edge);
-          if(el){
-            const val=attrNS(el,'val');
-            const sz=attrNS(el,'sz');
-            const color=normColor(attrNS(el,'color')) || '#000';
-            if(val && val!=='none'){
-              const s=(sz?parseInt(sz,10)/8:1)+'px';
-              borders[edge]=`${s} solid ${color}`;
-            } else {
-              borders[edge]='none';
-            }
-          }
+          if(el) borders[edge]=normEdge({val:attrNS(el,'val'),sz:attrNS(el,'sz'),color:attrNS(el,'color')});
         }
       }
     }
@@ -1123,13 +1150,20 @@ async function renderHtmlToPageCanvases(html){
   // text "walking" across the break). Instead, measure each top-level block and
   // start a new page at a block boundary so no block is ever cut.
   const SCALE=2; // html2canvas scale
-  // Top page margin (.docpage padding-top) in canvas px. Page 1 already carries
-  // this blank band at the top of the canvas; continuation pages must reproduce
-  // it so their content does not sit flush against the page edge.
+  // Page margins (.docpage padding-top / padding-bottom) in canvas px. Page 1
+  // already carries the top margin band at the top of the canvas; continuation
+  // pages must reproduce BOTH the top and bottom margin bands, otherwise
+  // content overflows into the bottom margin and the next page's content bleeds
+  // up into the previous page (mixed text / tables and paragraphs breaking at
+  // the wrong spot). The usable content region per page is the A4 height minus
+  // both vertical margins.
   const docpageEl=box.querySelector('.docpage');
-  const topPadCss=docpageEl?(parseFloat(getComputedStyle(docpageEl).paddingTop)||0):0;
+  const cs=docpageEl?getComputedStyle(docpageEl):null;
+  const topPadCss=cs?(parseFloat(cs.paddingTop)||0):0;
+  const botPadCss=cs?(parseFloat(cs.paddingBottom)||0):0;
   const topPadPx=topPadCss*SCALE;
-  const contentH=Math.max(1, pageHPx-topPadPx);
+  const botPadPx=botPadCss*SCALE;
+  const contentH=Math.max(1, pageHPx-topPadPx-botPadPx);
   const bodyEl=box.querySelector('.docbody');
   const footEl=box.querySelector('.docfoot');
   const blockEls=[];
@@ -1141,24 +1175,27 @@ async function renderHtmlToPageCanvases(html){
     return { top:(r.top-boxRect.top)*SCALE, height:r.height*SCALE };
   }).filter(b=>b.height>0).sort((a,b)=>a.top-b.top);
   // Page start positions (canvas y). A new page starts at a block whose bottom
-  // would cross the current page's bottom edge. Page 1 spans the full page
-  // height (its top band already carries the page margin); continuation pages
-  // carry a top-margin band then content of height (pageHPx - topPadPx).
-  // would cross the current page's bottom edge.
+  // would cross the current page's bottom edge. Page 1's region ends at the
+  // bottom margin; continuation pages carry a top-margin band and end at the
+  // bottom margin, so their usable height is contentH.
   const pageStarts=[0];
-  let pageBottom=pageHPx;
+  // Page 1's content region ends at (pageHPx - bottom margin); continuation
+  // pages add the top-margin band too, so their region height is contentH.
+  let pageBottom=pageHPx-botPadPx;
   for(const b of blocks){
     if(b.top+b.height <= pageBottom){ continue; }
     pageStarts.push(b.top);
     pageBottom=b.top+contentH;
-    pageBottom=b.top+pageHPx;
   }
   pageStarts.push(canvas.height);
   const canvases=[];
   for(let i=0;i<pageStarts.length-1;i++){
     const start=pageStarts[i];
     const isFirst=(i===0);
-    const avail=isFirst?pageHPx:contentH;
+    // Page 1 already carries the top margin band inside the source canvas, so
+    // only the bottom margin is subtracted; continuation pages carry both top
+    // and bottom margin bands (top drawn as a blank band, bottom left blank).
+    const avail=isFirst?(pageHPx-botPadPx):contentH;
     const contentEnd=Math.min(pageStarts[i+1], start+avail, canvas.height);
     if(contentEnd<=start) continue;
     const sliceH=Math.round(pageHPx);
